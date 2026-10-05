@@ -1,0 +1,9 @@
+{
+  "app_name": "SiteSentry Desktop",
+  "database_path": "data/sitesentry.db",
+  "fernet_key_path": "data/fernet.key",
+  "appearance": "System",
+  "enable_system_tray": "auto",
+  "default_interval_seconds": 60,
+  "default_timeout_seconds": 10
+}

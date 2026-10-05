@@ -1,0 +1,339 @@
+# SiteSentry Desktop
+
+SiteSentry Desktop là ứng dụng desktop đa nền tảng dùng để giám sát tự động trạng thái hoạt động của website, website cần đăng nhập và REST API endpoint. Ứng dụng chạy nền theo lịch, đo thời gian phản hồi, lưu lịch sử kiểm tra, giảm báo động giả bằng cơ chế retry và gửi email HTML khi phát hiện sự cố hoặc khi hệ thống phục hồi.
+
+Ứng dụng được xây dựng bằng Python 3.10+, giao diện `customtkinter`, kiểm tra mạng bất đồng bộ bằng `httpx`, lưu dữ liệu bằng SQLite, mã hóa dữ liệu nhạy cảm bằng Fernet, lập lịch bằng APScheduler và hỗ trợ cảnh báo SMTP.
+
+## Mục tiêu dự án
+
+SiteSentry Desktop được thiết kế cho nhu cầu theo dõi cục bộ các hệ thống web/API mà không cần triển khai server giám sát riêng. Người dùng có thể cấu hình monitor trực tiếp trên giao diện, import hàng loạt từ Excel, chạy kiểm tra thủ công hoặc để scheduler tự chạy nền.
+
+Các nhóm monitor chính:
+
+- Web thường: gửi HTTP/HTTPS GET tới một URL, kiểm tra HTTP status và nội dung text nếu có cấu hình.
+- Auth Web: đăng nhập bằng form POST, giữ session/cookie, sau đó truy cập trang xác minh và kiểm tra status/text.
+- REST API: hỗ trợ `GET`, `POST`, `PUT`, `PATCH`, `DELETE`, header/body tùy chỉnh, token bearer hoặc token header khác, kiểm tra HTTP status, text và JSON path.
+
+Các tính năng chính:
+
+- Dashboard tổng quan số lượng monitor, trạng thái `up/down/unknown`, thời gian phản hồi trung bình.
+- Thêm/sửa/xóa monitor bằng giao diện tab theo từng loại Web/Auth/API.
+- Đánh dấu trường bắt buộc và cảnh báo khi thiếu hoặc nhập sai thông tin.
+- Import Excel danh sách monitor và xuất file mẫu Excel.
+- Lưu log kiểm tra vào SQLite, xem log trong app và xuất CSV.
+- Chạy kiểm tra thủ công từng monitor hoặc toàn bộ monitor.
+- Scheduler chạy nền định kỳ cho các monitor đang bật.
+- Retry guard: thử lại nhiều lần trước khi kết luận lỗi.
+- SMTP HTML alert khi monitor down và email recovery khi monitor phục hồi.
+- Cooldown theo từng monitor để tránh spam email cảnh báo.
+- Mã hóa thông tin nhạy cảm trước khi lưu DB.
+- Hỗ trợ system tray trên nền tảng phù hợp; trên macOS mặc định tắt tray để tránh lỗi tương tác Tk/pystray.
+
+## Công nghệ sử dụng
+
+| Thành phần | Công nghệ | Vai trò |
+| --- | --- | --- |
+| Ngôn ngữ | Python 3.10+ | Runtime chính của ứng dụng desktop. |
+| GUI | `customtkinter`, `tkinter` | Xây dựng giao diện desktop, sidebar, dashboard, dialog, form settings. |
+| HTTP engine | `httpx` async, HTTP/2 | Gửi request kiểm tra website/API, hỗ trợ timeout, redirect, cookie/session. |
+| Database | `sqlite3` | Lưu monitor, log kiểm tra và settings cục bộ. |
+| Mã hóa | `cryptography.fernet.Fernet` | Mã hóa header/body/token/password/SMTP password trước khi lưu DB. |
+| Scheduler | `APScheduler BackgroundScheduler` | Lập lịch kiểm tra định kỳ trong background thread. |
+| Email | `smtplib`, `email.mime` | Gửi email HTML cảnh báo/down/recovery qua SMTP. |
+| Excel | `openpyxl` | Tạo file mẫu và import danh sách monitor từ `.xlsx`. |
+| System tray | `pystray`, `Pillow` | Icon khay hệ thống và menu chạy nền trên hệ điều hành hỗ trợ. |
+| Đồ họa asset | `Pillow` | Tạo icon mặc định khi thiếu file icon. |
+
+## Cấu trúc dự án
+
+```text
+sitesentry/
+├── assets/
+│   ├── icon.ico
+│   └── icon.png
+├── core/
+│   ├── security.py        # Quản lý Fernet key, encrypt/decrypt dữ liệu nhạy cảm
+│   ├── database.py        # SQLite schema, CRUD monitor/log/settings
+│   ├── checker.py         # Engine kiểm tra Web/Auth/API bằng httpx async
+│   ├── scheduler.py       # Lập lịch APScheduler và gọi checker định kỳ
+│   ├── notifier.py        # SMTP email alert, HTML template, cooldown
+│   └── excel_importer.py  # Tạo template Excel và import monitor hàng loạt
+├── ui/
+│   ├── main_window.py     # App chính, sidebar, view routing, scheduler/tray integration
+│   ├── dashboard_view.py  # Dashboard, danh sách monitor, import Excel, quick actions
+│   ├── monitor_dialog.py  # Dialog thêm/sửa monitor theo tab Web/Auth/API
+│   ├── logs_view.py       # Xem log, lọc trạng thái, export CSV, xóa log
+│   ├── settings_view.py   # SMTP/theme/settings và test email
+│   └── focus.py           # Helper xử lý focus/click cho ô nhập liệu
+├── main.py                # Entry point, kiểm tra Python runtime rồi mở app
+├── run.sh                 # Script chạy app và tự kiểm tra dependencies
+├── requirements.txt       # Danh sách thư viện Python
+├── config.json            # Cấu hình runtime ban đầu
+├── data/                  # SQLite DB và Fernet key được sinh khi chạy
+└── templates/             # File mẫu Excel cho import monitor
+```
+
+## Luồng khởi động ứng dụng
+
+1. Người dùng chạy `./run.sh`.
+2. Script dò runtime Python phù hợp, ưu tiên wrapper local `./scripts/python3.10` nếu có, sau đó các bản Python 3.13/3.12/3.11/3.10/3.
+3. Script kiểm tra các thư viện bắt buộc. Nếu thiếu, script cài theo `requirements.txt`.
+4. `main.py` kiểm tra Python phải từ 3.10 trở lên và tắt cảnh báo deprecated Tk trên macOS bằng `TK_SILENCE_DEPRECATION=1`.
+5. `SiteSentryApp` trong `ui/main_window.py` được khởi tạo.
+6. App đọc `config.json`, tạo icon nếu thiếu, mở Fernet key, mở SQLite DB và khởi tạo schema nếu chưa có.
+7. App tạo các service lõi: `SiteChecker`, `EmailNotifier`, `MonitorScheduler`.
+8. Giao diện chính hiển thị Dashboard, scheduler bắt đầu chạy và đồng bộ job cho các monitor đang `enabled`.
+9. Khi scheduler có kết quả kiểm tra, kết quả được đưa vào queue UI. Main thread đọc queue định kỳ và refresh giao diện an toàn.
+
+## Luồng sử dụng trên giao diện
+
+Dashboard là màn hình mặc định. Tại đây người dùng có thể:
+
+- Xem KPI: tổng monitor, số monitor up/down/unknown, response time trung bình.
+- Bấm `Add Monitor` để thêm monitor mới.
+- Bấm `Edit` để sửa monitor hiện có.
+- Bấm `Run` để kiểm tra ngay một monitor.
+- Bấm `Run All` để kiểm tra ngay toàn bộ monitor đang bật.
+- Bấm `Enable/Disable` để bật/tắt lịch chạy nền.
+- Bấm `Delete` để xóa monitor.
+- Bấm `Template` để xuất file mẫu Excel.
+- Bấm `Import Excel` để nhập hàng loạt monitor.
+
+Dialog thêm/sửa monitor có ba tab:
+
+- `Web`: cấu hình website thường.
+- `Auth Web`: cấu hình website cần đăng nhập bằng form.
+- `API`: cấu hình REST API endpoint.
+
+Các trường bắt buộc được đánh dấu `*`. Khi người dùng bấm `Save` hoặc `Test Run`, app kiểm tra dữ liệu đầu vào trước. Nếu thiếu hoặc sai, app hiển thị danh sách lỗi để người dùng sửa trước khi lưu/chạy thử.
+
+Logs View dùng để xem lịch sử kiểm tra gần nhất, lọc theo trạng thái `all/up/down`, export CSV hoặc xóa log.
+
+Settings View dùng để cấu hình SMTP, bật/tắt STARTTLS, người gửi, người nhận, mật khẩu SMTP, cooldown mặc định và theme giao diện.
+
+## Luồng kiểm tra monitor
+
+### Web thường
+
+1. Scheduler hoặc người dùng gọi kiểm tra monitor.
+2. `SiteChecker` đọc URL, timeout, header JSON, expected status và expected text.
+3. App gửi request `GET` bằng `httpx.AsyncClient` với HTTP/2 và `follow_redirects=True`.
+4. App đo thời gian phản hồi bằng millisecond.
+5. Nếu HTTP status khác `expected_status`, monitor được đánh dấu `down`.
+6. Nếu có `expected_text` nhưng nội dung response không chứa chuỗi đó, monitor được đánh dấu `down`.
+7. Nếu mọi điều kiện đạt, monitor được đánh dấu `up`.
+
+### Auth Web
+
+1. App chuẩn bị header, login URL, protected/verify URL, username/password field và extra fields.
+2. App tạo form data gồm username, password và các field phụ trong `auth_extra_fields`.
+3. App gửi `POST` tới `auth_login_url` bằng cùng một `httpx.AsyncClient` để giữ cookie/session.
+4. Nếu bước login trả về HTTP lỗi từ 400 trở lên, monitor được đánh dấu `down`.
+5. App gửi `GET` tới `auth_verify_url` hoặc `url` nếu verify URL trống.
+6. App kiểm tra HTTP status, expected text chung và `auth_verify_text` nếu có.
+7. Nếu xác minh thành công, monitor được đánh dấu `up`.
+
+### REST API
+
+1. App đọc method, endpoint URL, headers JSON, body, token và expected assertions.
+2. Nếu có `api_token`, app thêm token vào header được cấu hình bởi `api_token_header` và `api_token_prefix`.
+3. App gửi request theo method `GET/POST/PUT/PATCH/DELETE` bằng `httpx.AsyncClient`.
+4. App kiểm tra HTTP status và expected text nếu có.
+5. Nếu có `expected_json_path`, app parse response JSON và lấy giá trị theo dot path, ví dụ `status` hoặc `data.items[0].state`.
+6. Nếu có `expected_json_value`, app so sánh giá trị thực tế với giá trị mong đợi theo dạng chuỗi.
+7. Nếu tất cả assertion đạt, monitor được đánh dấu `up`; ngược lại là `down`.
+
+## Retry, log và cảnh báo
+
+Mỗi monitor có các thông số retry riêng:
+
+- `retry_count`: số lần thử trước khi kết luận lỗi.
+- `retry_delay_seconds`: thời gian nghỉ giữa các lần thử.
+
+Nếu lần kiểm tra đầu tiên lỗi, checker sẽ thử lại đến khi thành công hoặc hết số lần retry. Kết quả cuối cùng được lưu vào bảng `logs` và cập nhật lại trạng thái cuối trên bảng `monitors`.
+
+Sau khi có kết quả:
+
+1. Scheduler so sánh trạng thái mới với trạng thái cũ.
+2. Nếu monitor chuyển sang `down`, app kiểm tra cooldown rồi gửi email cảnh báo.
+3. Nếu monitor trước đó `down` và nay `up`, app gửi email recovery.
+4. Khi gửi email thành công, app lưu `last_alert_at` hoặc `last_recovery_alert_at` để áp dụng cooldown cho lần sau.
+
+Email cảnh báo là HTML email gồm tên monitor, loại monitor, URL, trạng thái, HTTP status, response time, số lần thử, thời điểm kiểm tra và lỗi chi tiết.
+
+## Bảo mật dữ liệu
+
+Ứng dụng lưu dữ liệu trên máy người dùng. SQLite DB nằm ở `data/sitesentry.db`, Fernet key nằm ở `data/fernet.key`.
+
+Các trường nhạy cảm được mã hóa trước khi lưu:
+
+- `headers_json`
+- `body`
+- `api_token`
+- `auth_password`
+- `auth_extra_fields`
+- `smtp_password`
+
+Khi app đọc monitor/settings từ database, các trường này được giải mã để hiển thị hoặc dùng khi kiểm tra. Nếu Fernet key bị mất hoặc thay đổi, dữ liệu đã mã hóa cũ sẽ không giải mã được.
+
+## Dữ liệu và schema chính
+
+SQLite có ba nhóm bảng chính:
+
+- `monitors`: cấu hình monitor, trạng thái cuối, thời điểm kiểm tra cuối, thông tin cooldown alert.
+- `logs`: lịch sử từng lần kiểm tra, gồm status, HTTP code, response time, error, attempts và detail JSON.
+- `settings`: cấu hình ứng dụng và SMTP; các setting nhạy cảm được đánh dấu secret và mã hóa.
+
+Database bật `PRAGMA foreign_keys = ON` và `journal_mode = WAL` để hỗ trợ ghi/đọc ổn định trong quá trình app chạy nền.
+
+## System tray
+
+Ứng dụng có cơ chế system tray bằng `pystray` và `Pillow`. Khi tray khả dụng, người dùng có thể ẩn app xuống tray, mở lại app, chạy `Run All Now` hoặc thoát app từ menu tray.
+
+Trên macOS, tray được tắt mặc định khi cấu hình `enable_system_tray` là `auto`, vì một số bản Tk/pystray có thể gây lỗi focus hoặc treo giao diện. Có thể bật/tắt tray qua `config.json` bằng `enable_system_tray`.
+
+## Build file cài đặt
+
+Project đã có cấu hình PyInstaller để đóng gói desktop app.
+
+Build macOS trên máy Mac:
+
+```bash
+bash scripts/build_macos.sh
+```
+
+Kết quả:
+
+- `dist/SiteSentry Desktop.app`
+- `dist/SiteSentry-Desktop-macOS.dmg`
+
+Build Windows trên máy Windows:
+
+```powershell
+.\scripts\build_windows.ps1
+```
+
+Kết quả:
+
+- `dist\SiteSentry Desktop.exe`
+- `dist\SiteSentry-Desktop-Windows.zip`
+
+Repo cũng có GitHub Actions workflow tại `.github/workflows/build.yml`. Khi push tag dạng `v1.0.0` hoặc chạy `workflow_dispatch`, GitHub Actions sẽ build cả macOS DMG và Windows EXE, rồi upload artifact trong trang Actions.
+
+Lưu ý: Windows `.exe` phải được build trên Windows hoặc runner Windows của GitHub Actions. macOS không thể tạo Windows `.exe` native bằng PyInstaller một cách đáng tin cậy nếu không dùng môi trường Windows.
+
+## Chạy ứng dụng
+
+Yêu cầu Python 3.10+.
+
+```bash
+chmod +x run.sh
+./run.sh
+```
+
+Script sẽ tự dò `./scripts/python3.10` nếu có, `python3.13`, `python3.12`, `python3.11`, `python3.10`, `python3`, rồi mới chạy app.
+
+Nếu máy đang có wrapper local:
+
+```bash
+./scripts/python3.10 --version
+./scripts/python3.10 main.py
+```
+
+Nếu máy chưa có Python 3.10+, cài Python từ python.org trước. Sau khi cài system-wide, có thể chạy thủ công bằng runtime đang có, ví dụ:
+
+```bash
+python3.12 -m pip install -r requirements.txt
+python3.12 main.py
+```
+
+Không dùng Python 3.9 đi kèm Apple CommandLineTools để chạy GUI. Runtime đó có thể mở cửa sổ Tk nhưng không render được các control CustomTkinter trên một số bản macOS, dẫn tới cửa sổ trống.
+
+## Dữ liệu cục bộ
+
+- SQLite database: `data/sitesentry.db`
+- Fernet key: `data/fernet.key`
+- Icon: `sitesentry/assets/icon.png`, `sitesentry/assets/icon.ico`
+
+Các thông tin nhạy cảm như mật khẩu đăng nhập, API token, header/body có khả năng chứa secret và SMTP password được mã hóa trước khi lưu vào SQLite.
+
+## Import Excel
+
+Trong Dashboard:
+
+- `Template`: lưu file mẫu `.xlsx` với sheet `Monitors` và `Instructions`.
+- `Import Excel`: nhập danh sách monitor từ file `.xlsx`.
+
+File mẫu có sẵn trong project: `templates/sitesentry_monitors_template.xlsx`.
+
+Cột bắt buộc trong sheet `Monitors`: `name`, `monitor_type`, `url`.
+
+`monitor_type` nhận một trong ba giá trị: `simple_web`, `auth_web`, `api`.
+
+Nếu cột `id` có giá trị và monitor tồn tại, app sẽ cập nhật monitor đó. Nếu `id` trống, app sẽ cập nhật theo cặp `name` + `url` nếu đã tồn tại, hoặc tạo mới nếu chưa có.
+
+## Thông số monitor
+
+### Thông số chung
+
+| Thông số | Áp dụng | Bắt buộc | Mặc định | Mô tả |
+| --- | --- | --- | --- | --- |
+| `id` | Excel import | Không | Trống | ID monitor hiện có. Có giá trị thì import sẽ cập nhật monitor đó. Để trống để tạo mới hoặc cập nhật theo `name` + `url`. |
+| `name` | Tất cả | Có | - | Tên hiển thị của monitor trên Dashboard và trong log/email cảnh báo. |
+| `monitor_type` | Tất cả | Có | `simple_web` | Loại monitor: `simple_web`, `auth_web`, hoặc `api`. |
+| `enabled` | Tất cả | Không | `1` | Bật/tắt lịch kiểm tra. Nhận `1`, `0`, `TRUE`, `FALSE`, `yes`, `no`. |
+| `url` | Tất cả | Có | - | URL cần kiểm tra. Với Auth Web là trang được bảo vệ; với API là endpoint. |
+| `method` | API, Web | Không | `GET` | HTTP method. API hỗ trợ `GET`, `POST`, `PUT`, `PATCH`, `DELETE`. Web thường dùng `GET`. |
+| `interval_seconds` | Tất cả | Không | `60` | Chu kỳ kiểm tra định kỳ, tính bằng giây. Tối thiểu 10 giây. |
+| `timeout_seconds` | Tất cả | Không | `10` | Thời gian chờ tối đa cho một lần request. |
+| `expected_status` | Tất cả | Không | `200` | HTTP status code mong đợi. Nếu khác giá trị này thì monitor bị xem là `down`. |
+| `expected_text` | Web, Auth Web, API | Không | Trống | Chuỗi cần xuất hiện trong response body. Để trống nếu không cần kiểm tra nội dung text. |
+| `headers_json` | Tất cả | Không | `{}` | Header request dạng JSON object, ví dụ `{"Accept":"application/json"}`. Dữ liệu này được mã hóa khi lưu DB. |
+| `retry_count` | Tất cả | Không | `3` | Số lần thử trước khi kết luận lỗi, giúp giảm báo động giả. |
+| `retry_delay_seconds` | Tất cả | Không | `2` | Thời gian nghỉ giữa các lần retry. |
+| `cooldown_minutes` | Tất cả | Không | `30` | Thời gian chống spam email cảnh báo cho cùng một monitor. |
+
+### Web
+
+| Thông số | Bắt buộc | Mặc định | Mô tả |
+| --- | --- | --- | --- |
+| `name` | Có | - | Tên website cần theo dõi. |
+| `monitor_type` | Có | `simple_web` | Dùng `simple_web`. |
+| `url` | Có | - | URL website cần kiểm tra HTTP/HTTPS. |
+| `expected_status` | Không | `200` | Status code mong đợi khi truy cập website. |
+| `expected_text` | Không | Trống | Nội dung phải có trong HTML/text trả về. |
+| `headers_json` | Không | `{}` | Header bổ sung nếu website yêu cầu. |
+
+### Auth Web
+
+| Thông số | Bắt buộc | Mặc định | Mô tả |
+| --- | --- | --- | --- |
+| `monitor_type` | Có | - | Dùng `auth_web`. |
+| `url` | Có | - | Trang sau đăng nhập hoặc trang cần xác minh. |
+| `auth_login_url` | Có | Theo `url` nếu trống | URL form login. App gửi request `POST` tới URL này. |
+| `auth_username` | Có | Trống | Tài khoản đăng nhập. |
+| `auth_password` | Có | Trống | Mật khẩu đăng nhập. Được mã hóa khi lưu DB. |
+| `auth_username_field` | Không | `username` | Tên field username trong form login. |
+| `auth_password_field` | Không | `password` | Tên field password trong form login. |
+| `auth_extra_fields` | Không | `{}` | JSON object cho field phụ, ví dụ CSRF token tĩnh hoặc tham số form khác. |
+| `auth_verify_url` | Không | Theo `url` | URL được gọi sau login để xác minh session/cookie. |
+| `auth_verify_text` | Không | Trống | Chuỗi phải xuất hiện sau login, ví dụ `Dashboard` hoặc tên người dùng. |
+| `expected_status` | Không | `200` | HTTP status mong đợi ở bước verify. |
+| `headers_json` | Không | `{}` | Header bổ sung khi login/verify. |
+
+### API
+
+| Thông số | Bắt buộc | Mặc định | Mô tả |
+| --- | --- | --- | --- |
+| `monitor_type` | Có | - | Dùng `api`. |
+| `url` | Có | - | REST API endpoint cần kiểm tra. |
+| `method` | Không | `GET` | HTTP method: `GET`, `POST`, `PUT`, `PATCH`, `DELETE`. |
+| `headers_json` | Không | `{}` | Header dạng JSON object. |
+| `body` | Không | Trống | Request body cho `POST`, `PUT`, `PATCH`, hoặc API cần payload. Được mã hóa khi lưu DB. |
+| `api_token` | Không | Trống | Token API. Được mã hóa khi lưu DB. |
+| `api_token_header` | Không | `Authorization` | Tên header chứa token. |
+| `api_token_prefix` | Không | `Bearer` | Tiền tố token. Để trống nếu header chỉ cần token thô. |
+| `expected_status` | Không | `200` | HTTP status code mong đợi. |
+| `expected_text` | Không | Trống | Chuỗi cần có trong response. |
+| `expected_json_path` | Không | Trống | Đường dẫn JSON dạng dot path, ví dụ `status` hoặc `data.items[0].state`. |
+| `expected_json_value` | Không | Trống | Giá trị mong đợi tại `expected_json_path`. So sánh theo dạng chuỗi. |
