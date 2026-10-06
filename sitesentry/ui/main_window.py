@@ -10,7 +10,7 @@ import threading
 os.environ.setdefault("TK_SILENCE_DEPRECATION", "1")
 
 import tkinter as tk
-from typing import Any
+from typing import Any, Callable
 
 import customtkinter as ctk
 from PIL import Image, ImageDraw
@@ -75,6 +75,7 @@ class SiteSentryApp(ctk.CTk):
         ctk.set_appearance_mode(appearance)
         ctk.set_default_color_theme("blue")
         super().__init__()
+        self._tk_thread_id = threading.get_ident()
 
         ensure_icon_files()
         self.title("SiteSentry Desktop")
@@ -94,6 +95,7 @@ class SiteSentryApp(ctk.CTk):
         self._tray_enabled = self._should_enable_tray()
         self._closing = False
         self._result_queue: queue.Queue[tuple[dict[str, Any], Any]] = queue.Queue()
+        self._ui_action_queue: queue.Queue[Callable[[], None]] = queue.Queue()
         self.status_text = tk.StringVar(value="Starting...")
         self._build_layout()
         self.show_view("Dashboard")
@@ -102,6 +104,7 @@ class SiteSentryApp(ctk.CTk):
             self._start_tray()
         self.scheduler.start()
         self._update_status_text()
+        self.after(100, self._drain_ui_action_queue)
         self.after(250, self._drain_result_queue)
         self.after(250, self._show_on_launch)
 
@@ -159,6 +162,28 @@ class SiteSentryApp(ctk.CTk):
             self._update_status_text()
         self.after(250, self._drain_result_queue)
 
+    def _is_tk_thread(self) -> bool:
+        return threading.get_ident() == self._tk_thread_id
+
+    def _queue_ui_action(self, action: Callable[[], None]) -> None:
+        if not self._closing:
+            self._ui_action_queue.put(action)
+
+    def _drain_ui_action_queue(self) -> None:
+        if self._closing:
+            return
+        while True:
+            try:
+                action = self._ui_action_queue.get_nowait()
+            except queue.Empty:
+                break
+            try:
+                action()
+            except tk.TclError:
+                pass
+        if not self._closing:
+            self.after(100, self._drain_ui_action_queue)
+
     def _show_on_launch(self) -> None:
         self.deiconify()
         self.lift()
@@ -175,16 +200,35 @@ class SiteSentryApp(ctk.CTk):
             self.quit_app()
 
     def hide_to_tray(self) -> None:
+        if not self._is_tk_thread():
+            self._queue_ui_action(self._hide_to_tray)
+            return
+        self._hide_to_tray()
+
+    def _hide_to_tray(self) -> None:
         if self._tray_icon is not None:
             self.withdraw()
             self._update_status_text()
 
     def show_from_tray(self) -> None:
-        self.after(0, self.deiconify)
-        self.after(0, self.lift)
-        self.after(0, self._update_status_text)
+        if not self._is_tk_thread():
+            self._queue_ui_action(self._show_from_tray)
+            return
+        self._show_from_tray()
+
+    def _show_from_tray(self) -> None:
+        self.deiconify()
+        self.lift()
+        try:
+            self.focus_set()
+        except tk.TclError:
+            pass
+        self._update_status_text()
 
     def quit_app(self) -> None:
+        if not self._is_tk_thread():
+            self._queue_ui_action(self.quit_app)
+            return
         self._closing = True
         try:
             self.scheduler.stop()
@@ -192,6 +236,18 @@ class SiteSentryApp(ctk.CTk):
             if self._tray_icon is not None:
                 self._tray_icon.stop()
             self.quit()
+
+    def _tray_show(self, *_: object) -> None:
+        self._queue_ui_action(self._show_from_tray)
+
+    def _tray_hide(self, *_: object) -> None:
+        self._queue_ui_action(self._hide_to_tray)
+
+    def _tray_run_all_now(self, *_: object) -> None:
+        self.scheduler.run_all_now()
+
+    def _tray_quit(self, *_: object) -> None:
+        self._queue_ui_action(self.quit_app)
 
     def _should_enable_tray(self) -> bool:
         configured = str(self.config.get("enable_system_tray", "auto")).strip().lower()
@@ -218,10 +274,10 @@ class SiteSentryApp(ctk.CTk):
 
         image = Image.open(asset_path("icon.png"))
         menu = pystray.Menu(
-            pystray.MenuItem("Show SiteSentry", lambda: self.show_from_tray(), default=True),
-            pystray.MenuItem("Hide Window", lambda: self.after(0, self.hide_to_tray)),
-            pystray.MenuItem("Run All Now", lambda: self.scheduler.run_all_now()),
-            pystray.MenuItem("Quit", lambda: self.after(0, self.quit_app)),
+            pystray.MenuItem("Show SiteSentry", self._tray_show, default=True),
+            pystray.MenuItem("Hide Window", self._tray_hide),
+            pystray.MenuItem("Run All Now", self._tray_run_all_now),
+            pystray.MenuItem("Quit", self._tray_quit),
         )
         self._tray_icon = pystray.Icon("sitesentry", image, "SiteSentry Desktop", menu)
         try:
