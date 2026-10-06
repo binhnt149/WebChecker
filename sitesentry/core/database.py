@@ -300,6 +300,8 @@ class Database:
         limit: int = 500,
         status_filter: str | None = None,
         monitor_id: int | None = None,
+        start_at: str | None = None,
+        end_at: str | None = None,
     ) -> list[dict[str, Any]]:
         where: list[str] = []
         params: list[Any] = []
@@ -309,6 +311,12 @@ class Database:
         if monitor_id:
             where.append("monitor_id = ?")
             params.append(monitor_id)
+        if start_at:
+            where.append("checked_at >= ?")
+            params.append(start_at)
+        if end_at:
+            where.append("checked_at <= ?")
+            params.append(end_at)
 
         sql = "SELECT * FROM logs"
         if where:

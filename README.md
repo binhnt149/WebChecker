@@ -27,7 +27,7 @@ Các tính năng chính:
 - SMTP HTML alert khi monitor down và email recovery khi monitor phục hồi.
 - Cooldown theo từng monitor để tránh spam email cảnh báo.
 - Mã hóa thông tin nhạy cảm trước khi lưu DB.
-- Hỗ trợ system tray trên nền tảng phù hợp; trên macOS mặc định tắt tray để tránh lỗi tương tác Tk/pystray.
+- Hỗ trợ chạy ẩn dưới system tray trên Windows/macOS/Linux khi tray khả dụng.
 
 ## Công nghệ sử dụng
 
@@ -107,7 +107,7 @@ Dialog thêm/sửa monitor có ba tab:
 
 Các trường bắt buộc được đánh dấu `*`. Khi người dùng bấm `Save` hoặc `Test Run`, app kiểm tra dữ liệu đầu vào trước. Nếu thiếu hoặc sai, app hiển thị danh sách lỗi để người dùng sửa trước khi lưu/chạy thử.
 
-Logs View dùng để xem lịch sử kiểm tra gần nhất, lọc theo trạng thái `all/up/down`, export CSV hoặc xóa log.
+Logs View dùng để xem lịch sử kiểm tra gần nhất, lọc theo trạng thái `all/up/down`, lọc theo khoảng thời gian, export Excel/CSV hoặc xóa log.
 
 Settings View dùng để cấu hình SMTP, bật/tắt STARTTLS, người gửi, người nhận, mật khẩu SMTP, cooldown mặc định và theme giao diện.
 
@@ -190,7 +190,16 @@ Database bật `PRAGMA foreign_keys = ON` và `journal_mode = WAL` để hỗ tr
 
 Ứng dụng có cơ chế system tray bằng `pystray` và `Pillow`. Khi tray khả dụng, người dùng có thể ẩn app xuống tray, mở lại app, chạy `Run All Now` hoặc thoát app từ menu tray.
 
-Trên macOS, tray được tắt mặc định khi cấu hình `enable_system_tray` là `auto`, vì một số bản Tk/pystray có thể gây lỗi focus hoặc treo giao diện. Có thể bật/tắt tray qua `config.json` bằng `enable_system_tray`.
+Khi người dùng bấm nút đóng cửa sổ, app sẽ ẩn xuống tray thay vì thoát hẳn nếu tray đang hoạt động. Muốn thoát hoàn toàn, chọn `Quit` trong menu tray. Có thể bật/tắt tray qua `config.json` bằng `enable_system_tray`.
+
+## Logs và xuất Excel
+
+Màn hình Logs hỗ trợ:
+
+- Lọc trạng thái `all`, `up`, `down`.
+- Lọc theo khoảng thời gian bằng `From` và `To`, định dạng `YYYY-MM-DD` hoặc `YYYY-MM-DD HH:MM:SS`.
+- Xuất Excel `.xlsx` theo đúng bộ lọc đang chọn.
+- Xuất CSV theo đúng bộ lọc đang chọn.
 
 ## Build file cài đặt
 

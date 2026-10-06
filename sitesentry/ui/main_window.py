@@ -177,10 +177,12 @@ class SiteSentryApp(ctk.CTk):
     def hide_to_tray(self) -> None:
         if self._tray_icon is not None:
             self.withdraw()
+            self._update_status_text()
 
     def show_from_tray(self) -> None:
         self.after(0, self.deiconify)
         self.after(0, self.lift)
+        self.after(0, self._update_status_text)
 
     def quit_app(self) -> None:
         self._closing = True
@@ -197,14 +199,12 @@ class SiteSentryApp(ctk.CTk):
             return False
         if configured in {"1", "true", "yes", "on", "enabled"}:
             return True
-        if platform.system() == "Darwin":
-            return False
-        return True
+        return platform.system() in {"Darwin", "Windows", "Linux"}
 
     def _update_status_text(self) -> None:
         monitor_count = len(self.db.list_monitors(include_disabled=True))
         scheduler_state = "running" if self.scheduler.running else "stopped"
-        tray_state = "on" if self._tray_icon is not None else "off"
+        tray_state = "hidden" if self._tray_icon is not None and not self.winfo_viewable() else ("on" if self._tray_icon is not None else "off")
         python_version = f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
         self.status_text.set(
             f"Scheduler: {scheduler_state}\n"
@@ -218,7 +218,8 @@ class SiteSentryApp(ctk.CTk):
 
         image = Image.open(asset_path("icon.png"))
         menu = pystray.Menu(
-            pystray.MenuItem("Show SiteSentry", lambda: self.show_from_tray()),
+            pystray.MenuItem("Show SiteSentry", lambda: self.show_from_tray(), default=True),
+            pystray.MenuItem("Hide Window", lambda: self.after(0, self.hide_to_tray)),
             pystray.MenuItem("Run All Now", lambda: self.scheduler.run_all_now()),
             pystray.MenuItem("Quit", lambda: self.after(0, self.quit_app)),
         )
