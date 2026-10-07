@@ -120,7 +120,7 @@ Settings View dùng để cấu hình SMTP, bật/tắt STARTTLS, người gửi
 3. App gửi request `GET` bằng `httpx.AsyncClient` với HTTP/2 và `follow_redirects=True`.
 4. App đo thời gian phản hồi bằng millisecond.
 5. Nếu HTTP status khác `expected_status`, monitor được đánh dấu `down`.
-6. Nếu có `expected_text` nhưng nội dung response không chứa chuỗi đó, monitor được đánh dấu `down`.
+6. Nếu có `expected_text` nhưng nội dung response không chứa chuỗi đó, monitor được đánh dấu `down`. App chuẩn hóa Unicode, khoảng trắng và hoa/thường để giảm sai khác nhỏ giữa môi trường chạy.
 7. Nếu mọi điều kiện đạt, monitor được đánh dấu `up`.
 
 ### Auth Web
@@ -296,7 +296,7 @@ Nếu cột `id` có giá trị và monitor tồn tại, app sẽ cập nhật m
 | `interval_seconds` | Tất cả | Không | `60` | Chu kỳ kiểm tra định kỳ, tính bằng giây. Tối thiểu 10 giây. |
 | `timeout_seconds` | Tất cả | Không | `10` | Thời gian chờ tối đa cho một lần request. |
 | `expected_status` | Tất cả | Không | `200` | HTTP status code mong đợi. Nếu khác giá trị này thì monitor bị xem là `down`. |
-| `expected_text` | Web, Auth Web, API | Không | Trống | Chuỗi cần xuất hiện trong response body. Để trống nếu không cần kiểm tra nội dung text. |
+| `expected_text` | Web, Auth Web, API | Không | Trống | Chuỗi cần xuất hiện trong response body. Để trống nếu chỉ cần kiểm tra HTTP status. Với website redirect về trang đăng nhập, dùng chuỗi ổn định có trên trang login hoặc chuyển sang Auth Web nếu cần xác minh sau đăng nhập. |
 | `headers_json` | Tất cả | Không | `{}` | Header request dạng JSON object, ví dụ `{"Accept":"application/json"}`. Dữ liệu này được mã hóa khi lưu DB. |
 | `retry_count` | Tất cả | Không | `3` | Số lần thử trước khi kết luận lỗi, giúp giảm báo động giả. |
 | `retry_delay_seconds` | Tất cả | Không | `2` | Thời gian nghỉ giữa các lần retry. |
@@ -310,7 +310,7 @@ Nếu cột `id` có giá trị và monitor tồn tại, app sẽ cập nhật m
 | `monitor_type` | Có | `simple_web` | Dùng `simple_web`. |
 | `url` | Có | - | URL website cần kiểm tra HTTP/HTTPS. |
 | `expected_status` | Không | `200` | Status code mong đợi khi truy cập website. |
-| `expected_text` | Không | Trống | Nội dung phải có trong HTML/text trả về. |
+| `expected_text` | Không | Trống | Nội dung phải có trong HTML/text trả về. Để trống nếu chỉ cần biết URL có trả HTTP đúng hay không. |
 | `headers_json` | Không | `{}` | Header bổ sung nếu website yêu cầu. |
 
 ### Auth Web

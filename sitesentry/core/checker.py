@@ -1,14 +1,21 @@
 from __future__ import annotations
 
 import asyncio
+import html
 import json
+import re
 import time
+import unicodedata
 from dataclasses import dataclass, field
 from typing import Any
 
 import httpx
 
 from .database import now_iso
+
+
+WHITESPACE_RE = re.compile(r"\s+")
+PREVIEW_CHARS = 500
 
 
 @dataclass
@@ -58,6 +65,27 @@ def extract_json_path(payload: Any, path: str) -> Any:
                 raise KeyError(path)
             current = current[index]
     return current
+
+
+def normalize_assertion_text(value: str) -> str:
+    normalized = unicodedata.normalize("NFC", value).replace("\xa0", " ")
+    return WHITESPACE_RE.sub(" ", normalized).strip()
+
+
+def contains_expected_text(response_text: str, expected_text: str) -> bool:
+    if expected_text in response_text:
+        return True
+    expected_normalized = normalize_assertion_text(expected_text)
+    if not expected_normalized:
+        return True
+    response_normalized = normalize_assertion_text(response_text)
+    return expected_normalized.casefold() in response_normalized.casefold()
+
+
+def response_preview(response_text: str) -> str:
+    without_assets = re.sub(r"<(script|style)\b.*?</\1>", " ", response_text, flags=re.IGNORECASE | re.DOTALL)
+    without_tags = re.sub(r"<[^>]+>", " ", without_assets)
+    return normalize_assertion_text(html.unescape(without_tags))[:PREVIEW_CHARS]
 
 
 class SiteChecker:
@@ -146,14 +174,14 @@ class SiteChecker:
         response_ms = int((time.perf_counter() - start) * 1000)
         result = self._assert_response(monitor, verify_response, response_ms)
         verify_text = monitor.get("auth_verify_text") or ""
-        if result.ok and verify_text and verify_text not in verify_response.text:
+        if result.ok and verify_text and not contains_expected_text(verify_response.text, str(verify_text)):
             return CheckResult(
                 False,
                 "down",
                 response_ms=response_ms,
                 status_code=verify_response.status_code,
-                error="Authentication DOM/text verification failed",
-                details={"phase": "verify", "missing_text": verify_text},
+                error=self._missing_text_error("Authentication verification text was not found", verify_response, str(verify_text)),
+                details=self._response_details(verify_response, missing_text=str(verify_text), phase="verify"),
             )
         result.details["phase"] = "verify"
         return result
@@ -213,15 +241,40 @@ class SiteChecker:
                 error=f"Expected HTTP {expected_status}, got {response.status_code}",
             )
 
-        expected_text = monitor.get("expected_text") or ""
-        if expected_text and expected_text not in response.text:
+        expected_text = str(monitor.get("expected_text") or "")
+        if expected_text and not contains_expected_text(response.text, expected_text):
             return CheckResult(
                 False,
                 "down",
                 response_ms=response_ms,
                 status_code=response.status_code,
-                error="Expected text was not found in the response",
-                details={"missing_text": expected_text},
+                error=self._missing_text_error("Expected text was not found in the response", response, expected_text),
+                details=self._response_details(response, missing_text=expected_text),
             )
 
         return CheckResult(True, "up", response_ms=response_ms, status_code=response.status_code)
+
+    def _missing_text_error(self, message: str, response: httpx.Response, expected_text: str) -> str:
+        return (
+            f"{message}: {expected_text[:120]!r} "
+            f"(final URL: {response.url}, response chars: {len(response.text)})"
+        )
+
+    def _response_details(
+        self,
+        response: httpx.Response,
+        missing_text: str = "",
+        phase: str | None = None,
+    ) -> dict[str, Any]:
+        details: dict[str, Any] = {
+            "final_url": str(response.url),
+            "content_type": response.headers.get("content-type", ""),
+            "response_chars": len(response.text),
+            "response_preview": response_preview(response.text),
+        }
+        if missing_text:
+            details["missing_text"] = missing_text
+            details["missing_text_normalized"] = normalize_assertion_text(missing_text)
+        if phase:
+            details["phase"] = phase
+        return details
