@@ -37,8 +37,8 @@ class MonitorDialog(ctk.CTkToplevel):
         self.on_save = on_save
         self._first_focus_widget: ctk.CTkEntry | None = None
         self.title("Monitor")
-        self.geometry("860x720")
-        self.minsize(760, 620)
+        self.geometry("980x840")
+        self.minsize(860, 720)
         self.transient(master)
         self.protocol("WM_DELETE_WINDOW", self._close)
 
@@ -116,20 +116,9 @@ class MonitorDialog(ctk.CTkToplevel):
         self._entry(frame, "Retry delay", self.retry_delay_var, 1, 3, required=True, placeholder="2")
         self._entry(frame, "Cooldown (min)", self.cooldown_var, 1, 4, required=True, placeholder="30")
 
-        self.expected_text = bind_focus_on_click(ctk.CTkTextbox(frame, height=62))
+        self.expected_text = bind_focus_on_click(ctk.CTkTextbox(frame, height=48))
         ctk.CTkLabel(frame, text="Expected text").grid(row=4, column=0, padx=8, pady=(6, 0), sticky="w")
-        self.expected_text.grid(row=5, column=0, columnspan=6, padx=8, pady=(0, 8), sticky="ew")
-        ctk.CTkLabel(
-            frame,
-            text=(
-                "* Required. Web: URL. Auth Web: Protected URL, Login URL, Username, Password, form field names. "
-                "API: Endpoint URL, Method."
-            ),
-            anchor="w",
-            justify="left",
-            text_color=REQUIRED_COLOR,
-            wraplength=780,
-        ).grid(row=6, column=0, columnspan=6, padx=8, pady=(0, 8), sticky="ew")
+        self.expected_text.grid(row=5, column=0, columnspan=6, padx=8, pady=(0, 6), sticky="ew")
 
     def _build_tabs(self) -> None:
         self.tabs = ctk.CTkTabview(self, corner_radius=8)
@@ -162,10 +151,12 @@ class MonitorDialog(ctk.CTkToplevel):
     def _build_auth_tab(self) -> None:
         self.auth_tab.grid_columnconfigure(0, weight=1)
         self.auth_tab.grid_rowconfigure(0, weight=1)
-        auth_frame = ctk.CTkScrollableFrame(self.auth_tab, fg_color="transparent", corner_radius=0)
-        auth_frame.grid(row=0, column=0, sticky="nsew")
-        for column in range(4):
-            auth_frame.grid_columnconfigure(column, weight=1)
+        auth_frame = ctk.CTkScrollableFrame(self.auth_tab, fg_color="transparent", corner_radius=0, scrollbar_button_color="#64748b")
+        auth_frame.grid(row=0, column=0, padx=4, pady=4, sticky="nsew")
+        auth_frame.grid_columnconfigure(0, weight=0, minsize=132)
+        auth_frame.grid_columnconfigure(1, weight=1)
+        auth_frame.grid_columnconfigure(2, weight=0, minsize=132)
+        auth_frame.grid_columnconfigure(3, weight=1)
         self.auth_url_var = tk.StringVar()
         self.auth_login_url_var = tk.StringVar()
         self.auth_verify_url_var = tk.StringVar()
@@ -175,92 +166,88 @@ class MonitorDialog(ctk.CTkToplevel):
         self.auth_password_field_var = tk.StringVar(value="password")
         self.auth_verify_text_var = tk.StringVar()
 
-        self._entry(
+        self._inline_entry(
             auth_frame,
             "Protected URL",
             self.auth_url_var,
             0,
             0,
-            columnspan=4,
+            entry_columnspan=3,
             required=True,
             placeholder="https://example.com/account",
         )
-        self._entry(
+        self._inline_entry(
             auth_frame,
             "Login URL",
             self.auth_login_url_var,
             1,
             0,
-            columnspan=4,
+            entry_columnspan=3,
             required=True,
             placeholder="https://example.com/login",
         )
-        self._entry(
+        self._inline_entry(
             auth_frame,
             "Verify URL",
             self.auth_verify_url_var,
             2,
             0,
-            columnspan=4,
+            entry_columnspan=3,
             placeholder="Optional, defaults to Protected URL",
         )
-        self._entry(
+        self._inline_entry(
             auth_frame,
             "Username",
             self.auth_username_var,
             3,
             0,
-            columnspan=2,
             required=True,
             placeholder="user@example.com",
         )
-        self._entry(
+        self._inline_entry(
             auth_frame,
             "Password",
             self.auth_password_var,
             3,
             2,
-            columnspan=2,
             show="*",
             required=True,
             placeholder="Login password",
         )
-        self._entry(
+        self._inline_entry(
             auth_frame,
             "Username field",
             self.auth_username_field_var,
             4,
             0,
-            columnspan=2,
             required=True,
             placeholder="username",
         )
-        self._entry(
+        self._inline_entry(
             auth_frame,
             "Password field",
             self.auth_password_field_var,
             4,
             2,
-            columnspan=2,
             required=True,
             placeholder="password",
         )
-        self._entry(
+        self._inline_entry(
             auth_frame,
             "Verify text",
             self.auth_verify_text_var,
             5,
             0,
-            columnspan=4,
+            entry_columnspan=3,
             placeholder="Optional text after login",
         )
 
-        ctk.CTkLabel(auth_frame, text="Extra login fields JSON").grid(row=12, column=0, padx=8, pady=(10, 0), sticky="nw")
-        self.auth_extra_fields = bind_focus_on_click(ctk.CTkTextbox(auth_frame, height=100))
-        self.auth_extra_fields.grid(row=13, column=1, columnspan=3, padx=8, pady=(10, 8), sticky="nsew")
-        ctk.CTkLabel(auth_frame, text="Headers JSON").grid(row=14, column=0, padx=8, pady=(10, 0), sticky="nw")
-        self.auth_headers = bind_focus_on_click(ctk.CTkTextbox(auth_frame, height=100))
-        self.auth_headers.grid(row=15, column=1, columnspan=3, padx=8, pady=(10, 8), sticky="nsew")
+        ctk.CTkLabel(auth_frame, text="Extra login fields JSON").grid(row=6, column=0, padx=8, pady=(8, 6), sticky="nw")
+        self.auth_extra_fields = bind_focus_on_click(ctk.CTkTextbox(auth_frame, height=78))
+        self.auth_extra_fields.grid(row=6, column=1, columnspan=3, padx=8, pady=(8, 6), sticky="ew")
+        ctk.CTkLabel(auth_frame, text="Headers JSON").grid(row=7, column=0, padx=8, pady=(6, 8), sticky="nw")
+        self.auth_headers = bind_focus_on_click(ctk.CTkTextbox(auth_frame, height=78))
+        self.auth_headers.grid(row=7, column=1, columnspan=3, padx=8, pady=(6, 8), sticky="ew")
 
     def _build_api_tab(self) -> None:
         for column in range(4):
@@ -343,6 +330,33 @@ class MonitorDialog(ctk.CTkToplevel):
         )
         entry = bind_focus_on_click(ctk.CTkEntry(parent, textvariable=variable, show=show, placeholder_text=placeholder))
         entry.grid(row=row * 2 + 1, column=column, columnspan=columnspan, padx=8, pady=(0, 8), sticky="ew")
+        if self._first_focus_widget is None:
+            self._first_focus_widget = entry
+        return entry
+
+    def _inline_entry(
+        self,
+        parent: Any,
+        label: str,
+        variable: tk.StringVar,
+        row: int,
+        column: int,
+        entry_columnspan: int = 1,
+        show: str | None = None,
+        required: bool = False,
+        placeholder: str = "",
+    ) -> ctk.CTkEntry:
+        label_text = f"{label} *" if required else label
+        label_kwargs = {"text_color": REQUIRED_COLOR} if required else {}
+        ctk.CTkLabel(parent, text=label_text, **label_kwargs).grid(
+            row=row,
+            column=column,
+            padx=(8, 6),
+            pady=7,
+            sticky="w",
+        )
+        entry = bind_focus_on_click(ctk.CTkEntry(parent, textvariable=variable, show=show, placeholder_text=placeholder))
+        entry.grid(row=row, column=column + 1, columnspan=entry_columnspan, padx=(0, 8), pady=7, sticky="ew")
         if self._first_focus_widget is None:
             self._first_focus_widget = entry
         return entry
