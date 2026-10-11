@@ -350,7 +350,7 @@ def _add_instructions(wb: Workbook) -> None:
         ("body", "No", "Request body for API methods such as POST/PUT/PATCH."),
         ("api_token", "No", "Stored encrypted after import."),
         ("auth_password", "No", "Stored encrypted after import."),
-        ("auth_extra_fields", "No", "JSON object with additional login form fields."),
+        ("auth_extra_fields", "No", "JSON object with additional login form fields. Hidden inputs are collected from the login page automatically."),
     ]
     for row in rows:
         ws.append(row)

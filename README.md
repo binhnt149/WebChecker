@@ -126,12 +126,13 @@ Settings View dùng để cấu hình SMTP, bật/tắt STARTTLS, người gửi
 ### Auth Web
 
 1. App chuẩn bị header, login URL, protected/verify URL, username/password field và extra fields.
-2. App tạo form data gồm username, password và các field phụ trong `auth_extra_fields`.
-3. App gửi `POST` tới `auth_login_url` bằng cùng một `httpx.AsyncClient` để giữ cookie/session.
-4. Nếu bước login trả về HTTP lỗi từ 400 trở lên, monitor được đánh dấu `down`.
-5. App gửi `GET` tới `auth_verify_url` hoặc `url` nếu verify URL trống.
-6. App kiểm tra HTTP status, expected text chung và `auth_verify_text` nếu có.
-7. Nếu xác minh thành công, monitor được đánh dấu `up`.
+2. App mở `auth_login_url` để nhận cookie/session ban đầu và tự lấy các hidden input trong form login, ví dụ CSRF token.
+3. App tạo form data gồm hidden input, username, password và các field phụ trong `auth_extra_fields`.
+4. App gửi `POST` tới action của form login hoặc `auth_login_url` bằng cùng một `httpx.AsyncClient` để giữ cookie/session.
+5. Nếu bước login trả về HTTP lỗi từ 400 trở lên, monitor được đánh dấu `down`.
+6. App gửi `GET` tới `auth_verify_url` hoặc `url` nếu verify URL trống.
+7. App kiểm tra HTTP status, expected text chung và `auth_verify_text` nếu có.
+8. Nếu xác minh thành công, monitor được đánh dấu `up`.
 
 ### REST API
 
@@ -324,11 +325,26 @@ Nếu cột `id` có giá trị và monitor tồn tại, app sẽ cập nhật m
 | `auth_password` | Có | Trống | Mật khẩu đăng nhập. Được mã hóa khi lưu DB. |
 | `auth_username_field` | Không | `username` | Tên field username trong form login. |
 | `auth_password_field` | Không | `password` | Tên field password trong form login. |
-| `auth_extra_fields` | Không | `{}` | JSON object cho field phụ, ví dụ CSRF token tĩnh hoặc tham số form khác. |
+| `auth_extra_fields` | Không | `{}` | JSON object cho field phụ. Hidden input trong form login được app tự lấy; chỉ nhập field cần ghi đè hoặc bổ sung. |
 | `auth_verify_url` | Không | Theo `url` | URL được gọi sau login để xác minh session/cookie. |
-| `auth_verify_text` | Không | Trống | Chuỗi phải xuất hiện sau login, ví dụ `Dashboard` hoặc tên người dùng. |
+| `auth_verify_text` | Không | Trống | Chuỗi phải xuất hiện sau login, ví dụ `Dashboard` hoặc tên người dùng. Nên nhập để tránh báo UP giả khi đăng nhập thất bại nhưng trang login vẫn trả HTTP 200. |
 | `expected_status` | Không | `200` | HTTP status mong đợi ở bước verify. |
 | `headers_json` | Không | `{}` | Header bổ sung khi login/verify. |
+
+Ví dụ với `https://at.npc.com.vn:8031`:
+
+| Thông số | Giá trị gợi ý |
+| --- | --- |
+| `monitor_type` | `auth_web` |
+| `url` / Protected URL | `https://at.npc.com.vn:8031/` |
+| `auth_login_url` | `https://at.npc.com.vn:8031/Account/Login` |
+| `auth_username_field` | `UserName` |
+| `auth_password_field` | `Password` |
+| `auth_extra_fields` | `{}` hoặc `{"RememberMe":"false"}` |
+| `auth_verify_url` | URL trang cần xác minh sau đăng nhập, thường là `https://at.npc.com.vn:8031/` |
+| `auth_verify_text` | Một chuỗi chỉ xuất hiện sau khi đăng nhập thành công, ví dụ tên màn hình dashboard hoặc tên tài khoản. |
+
+Trang này có hidden field `__RequestVerificationToken` thay đổi theo phiên. Không copy token này vào Excel/app; SiteSentry tự lấy token mới từ trang login trước khi POST.
 
 ### API
 

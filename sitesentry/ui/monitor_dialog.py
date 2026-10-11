@@ -160,8 +160,12 @@ class MonitorDialog(ctk.CTkToplevel):
         self.web_tab.grid_rowconfigure(3, weight=1)
 
     def _build_auth_tab(self) -> None:
+        self.auth_tab.grid_columnconfigure(0, weight=1)
+        self.auth_tab.grid_rowconfigure(0, weight=1)
+        auth_frame = ctk.CTkScrollableFrame(self.auth_tab, fg_color="transparent", corner_radius=0)
+        auth_frame.grid(row=0, column=0, sticky="nsew")
         for column in range(4):
-            self.auth_tab.grid_columnconfigure(column, weight=1)
+            auth_frame.grid_columnconfigure(column, weight=1)
         self.auth_url_var = tk.StringVar()
         self.auth_login_url_var = tk.StringVar()
         self.auth_verify_url_var = tk.StringVar()
@@ -172,7 +176,7 @@ class MonitorDialog(ctk.CTkToplevel):
         self.auth_verify_text_var = tk.StringVar()
 
         self._entry(
-            self.auth_tab,
+            auth_frame,
             "Protected URL",
             self.auth_url_var,
             0,
@@ -182,7 +186,7 @@ class MonitorDialog(ctk.CTkToplevel):
             placeholder="https://example.com/account",
         )
         self._entry(
-            self.auth_tab,
+            auth_frame,
             "Login URL",
             self.auth_login_url_var,
             1,
@@ -192,7 +196,7 @@ class MonitorDialog(ctk.CTkToplevel):
             placeholder="https://example.com/login",
         )
         self._entry(
-            self.auth_tab,
+            auth_frame,
             "Verify URL",
             self.auth_verify_url_var,
             2,
@@ -201,7 +205,7 @@ class MonitorDialog(ctk.CTkToplevel):
             placeholder="Optional, defaults to Protected URL",
         )
         self._entry(
-            self.auth_tab,
+            auth_frame,
             "Username",
             self.auth_username_var,
             3,
@@ -211,7 +215,7 @@ class MonitorDialog(ctk.CTkToplevel):
             placeholder="user@example.com",
         )
         self._entry(
-            self.auth_tab,
+            auth_frame,
             "Password",
             self.auth_password_var,
             3,
@@ -222,7 +226,7 @@ class MonitorDialog(ctk.CTkToplevel):
             placeholder="Login password",
         )
         self._entry(
-            self.auth_tab,
+            auth_frame,
             "Username field",
             self.auth_username_field_var,
             4,
@@ -232,7 +236,7 @@ class MonitorDialog(ctk.CTkToplevel):
             placeholder="username",
         )
         self._entry(
-            self.auth_tab,
+            auth_frame,
             "Password field",
             self.auth_password_field_var,
             4,
@@ -242,7 +246,7 @@ class MonitorDialog(ctk.CTkToplevel):
             placeholder="password",
         )
         self._entry(
-            self.auth_tab,
+            auth_frame,
             "Verify text",
             self.auth_verify_text_var,
             5,
@@ -251,13 +255,12 @@ class MonitorDialog(ctk.CTkToplevel):
             placeholder="Optional text after login",
         )
 
-        ctk.CTkLabel(self.auth_tab, text="Extra login fields JSON").grid(row=12, column=0, padx=8, pady=(10, 0), sticky="nw")
-        self.auth_extra_fields = bind_focus_on_click(ctk.CTkTextbox(self.auth_tab, height=100))
+        ctk.CTkLabel(auth_frame, text="Extra login fields JSON").grid(row=12, column=0, padx=8, pady=(10, 0), sticky="nw")
+        self.auth_extra_fields = bind_focus_on_click(ctk.CTkTextbox(auth_frame, height=100))
         self.auth_extra_fields.grid(row=13, column=1, columnspan=3, padx=8, pady=(10, 8), sticky="nsew")
-        ctk.CTkLabel(self.auth_tab, text="Headers JSON").grid(row=14, column=0, padx=8, pady=(10, 0), sticky="nw")
-        self.auth_headers = bind_focus_on_click(ctk.CTkTextbox(self.auth_tab, height=100))
+        ctk.CTkLabel(auth_frame, text="Headers JSON").grid(row=14, column=0, padx=8, pady=(10, 0), sticky="nw")
+        self.auth_headers = bind_focus_on_click(ctk.CTkTextbox(auth_frame, height=100))
         self.auth_headers.grid(row=15, column=1, columnspan=3, padx=8, pady=(10, 8), sticky="nsew")
-        self.auth_tab.grid_rowconfigure(15, weight=1)
 
     def _build_api_tab(self) -> None:
         for column in range(4):

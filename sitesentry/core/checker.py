@@ -7,7 +7,9 @@ import re
 import time
 import unicodedata
 from dataclasses import dataclass, field
+from html.parser import HTMLParser
 from typing import Any
+from urllib.parse import urljoin, urlparse
 
 import httpx
 
@@ -34,6 +36,32 @@ class CheckResult:
             return json.dumps(self.details, ensure_ascii=False)
         except TypeError:
             return "{}"
+
+
+class LoginFormParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.forms: list[dict[str, Any]] = []
+        self._current_form: dict[str, Any] | None = None
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        attr_map = {name.lower(): value or "" for name, value in attrs}
+        if tag.lower() == "form":
+            self._current_form = {"attrs": attr_map, "inputs": []}
+            return
+        if tag.lower() == "input" and self._current_form is not None:
+            self._current_form["inputs"].append(attr_map)
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag.lower() == "form" and self._current_form is not None:
+            self.forms.append(self._current_form)
+            self._current_form = None
+
+    def close(self) -> None:
+        super().close()
+        if self._current_form is not None:
+            self.forms.append(self._current_form)
+            self._current_form = None
 
 
 def headers_from_json(raw: str | None) -> dict[str, str]:
@@ -86,6 +114,13 @@ def response_preview(response_text: str) -> str:
     without_assets = re.sub(r"<(script|style)\b.*?</\1>", " ", response_text, flags=re.IGNORECASE | re.DOTALL)
     without_tags = re.sub(r"<[^>]+>", " ", without_assets)
     return normalize_assertion_text(html.unescape(without_tags))[:PREVIEW_CHARS]
+
+
+def parse_login_forms(response_text: str) -> list[dict[str, Any]]:
+    parser = LoginFormParser()
+    parser.feed(response_text)
+    parser.close()
+    return parser.forms
 
 
 class SiteChecker:
@@ -144,21 +179,31 @@ class SiteChecker:
         verify_url = monitor.get("auth_verify_url") or monitor.get("url")
         username_field = monitor.get("auth_username_field") or "username"
         password_field = monitor.get("auth_password_field") or "password"
-        form_data: dict[str, str] = {
-            username_field: str(monitor.get("auth_username") or ""),
-            password_field: str(monitor.get("auth_password") or ""),
-        }
 
+        extra_fields: dict[str, str] = {}
         raw_extra = monitor.get("auth_extra_fields") or ""
         if raw_extra:
             extra = json.loads(raw_extra)
             if not isinstance(extra, dict):
                 raise ValueError("Extra login fields must be a JSON object")
-            form_data.update({str(key): str(value) for key, value in extra.items()})
+            extra_fields = {str(key): str(value) for key, value in extra.items()}
 
         start = time.perf_counter()
         async with httpx.AsyncClient(http2=True, timeout=self._timeout(monitor), follow_redirects=True) as client:
-            login_response = await client.post(str(login_url), data=form_data, headers=headers)
+            login_page_response = await client.get(str(login_url), headers=headers)
+            login_page_url = str(login_page_response.url)
+            form_data, post_url, form_details = self._auth_form_payload(
+                login_page_response,
+                login_url=str(login_url),
+                username_field=str(username_field),
+                password_field=str(password_field),
+                username=str(monitor.get("auth_username") or ""),
+                password=str(monitor.get("auth_password") or ""),
+                extra_fields=extra_fields,
+            )
+            post_headers = dict(headers)
+            post_headers.setdefault("Referer", str(login_page_response.url))
+            login_response = await client.post(post_url, data=form_data, headers=post_headers)
             if login_response.status_code >= 400:
                 response_ms = int((time.perf_counter() - start) * 1000)
                 return CheckResult(
@@ -167,13 +212,22 @@ class SiteChecker:
                     response_ms=response_ms,
                     status_code=login_response.status_code,
                     error=f"Login failed with HTTP {login_response.status_code}",
-                    details={"phase": "login"},
+                    details={"phase": "login", **form_details},
                 )
             verify_response = await client.get(str(verify_url), headers=headers)
 
         response_ms = int((time.perf_counter() - start) * 1000)
         result = self._assert_response(monitor, verify_response, response_ms)
         verify_text = monitor.get("auth_verify_text") or ""
+        if result.ok and not verify_text and self._is_login_page(verify_response.url, str(login_url), login_page_url):
+            return CheckResult(
+                False,
+                "down",
+                response_ms=response_ms,
+                status_code=verify_response.status_code,
+                error="Authentication did not leave the login page; check credentials or set Auth verify text",
+                details={**self._response_details(verify_response, phase="verify"), **form_details},
+            )
         if result.ok and verify_text and not contains_expected_text(verify_response.text, str(verify_text)):
             return CheckResult(
                 False,
@@ -181,10 +235,76 @@ class SiteChecker:
                 response_ms=response_ms,
                 status_code=verify_response.status_code,
                 error=self._missing_text_error("Authentication verification text was not found", verify_response, str(verify_text)),
-                details=self._response_details(verify_response, missing_text=str(verify_text), phase="verify"),
+                details={**self._response_details(verify_response, missing_text=str(verify_text), phase="verify"), **form_details},
             )
         result.details["phase"] = "verify"
+        result.details.update(form_details)
         return result
+
+    def _is_login_page(self, response_url: httpx.URL, configured_login_url: str, discovered_login_url: str) -> bool:
+        final = urlparse(str(response_url))
+        candidates = [urlparse(configured_login_url), urlparse(discovered_login_url)]
+        final_path = final.path.rstrip("/") or "/"
+        for candidate in candidates:
+            candidate_path = candidate.path.rstrip("/") or "/"
+            if final.netloc == candidate.netloc and final_path == candidate_path:
+                return True
+        return False
+
+    def _auth_form_payload(
+        self,
+        login_response: httpx.Response,
+        login_url: str,
+        username_field: str,
+        password_field: str,
+        username: str,
+        password: str,
+        extra_fields: dict[str, str],
+    ) -> tuple[dict[str, str], str, dict[str, Any]]:
+        form = self._select_login_form(login_response.text, username_field, password_field)
+        post_url = str(login_response.url if login_response.status_code < 400 else login_url)
+        form_data: dict[str, str] = {}
+        form_details: dict[str, Any] = {
+            "login_form_url": str(login_response.url),
+            "login_form_status": login_response.status_code,
+            "login_hidden_fields": [],
+        }
+
+        if form is not None:
+            action = str(form.get("attrs", {}).get("action") or "")
+            post_url = urljoin(str(login_response.url), action) if action else str(login_response.url)
+            hidden_names: list[str] = []
+            for input_attrs in form.get("inputs", []):
+                field_name = str(input_attrs.get("name") or "")
+                if not field_name:
+                    continue
+                field_type = str(input_attrs.get("type") or "text").lower()
+                if field_type == "hidden":
+                    form_data[field_name] = str(input_attrs.get("value") or "")
+                    hidden_names.append(field_name)
+            form_details["login_form_action"] = post_url
+            form_details["login_hidden_fields"] = hidden_names
+
+        form_data.update(extra_fields)
+        form_data[username_field] = username
+        form_data[password_field] = password
+        return form_data, post_url, form_details
+
+    def _select_login_form(
+        self,
+        response_text: str,
+        username_field: str,
+        password_field: str,
+    ) -> dict[str, Any] | None:
+        forms = parse_login_forms(response_text)
+        if not forms:
+            return None
+        wanted = {username_field, password_field}
+        for form in forms:
+            names = {str(input_attrs.get("name") or "") for input_attrs in form.get("inputs", [])}
+            if wanted & names:
+                return form
+        return forms[0]
 
     async def _check_api(self, monitor: dict[str, Any]) -> CheckResult:
         headers = self._base_headers(monitor)
