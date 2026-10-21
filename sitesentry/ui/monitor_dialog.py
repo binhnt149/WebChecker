@@ -300,7 +300,7 @@ class MonitorDialog(ctk.CTkToplevel):
         frame = ctk.CTkFrame(self, fg_color="transparent")
         frame.grid(row=2, column=0, padx=16, pady=(8, 16), sticky="ew")
         frame.grid_columnconfigure(0, weight=1)
-        self.result_label = ctk.CTkLabel(frame, text="Fields marked * are required.", anchor="w", text_color=INFO_COLOR)
+        self.result_label = ctk.CTkLabel(frame, text="Fields marked * are required.", anchor="w", justify="left", wraplength=760, text_color=INFO_COLOR)
         self.result_label.grid(row=0, column=0, padx=0, pady=0, sticky="ew")
         ctk.CTkButton(frame, text="Test Run", command=self._test_run, width=110).grid(row=0, column=1, padx=6)
         ctk.CTkButton(frame, text="Cancel", command=self._close, width=90, fg_color="#475569").grid(row=0, column=2, padx=6)
@@ -575,7 +575,9 @@ class MonitorDialog(ctk.CTkToplevel):
         def worker() -> None:
             result = asyncio.run(self.app.checker.check_monitor(data))
             message = "UP" if result.ok else f"DOWN: {result.error}"
-            suffix = f"HTTP {result.status_code}, {result.response_ms} ms, attempts {result.attempts}"
+            http_info = f"HTTP {result.status_code}, " if result.status_code is not None else ""
+            response_ms = result.response_ms if result.response_ms is not None else "-"
+            suffix = f"{http_info}{response_ms} ms, attempts {result.attempts}"
             color = SUCCESS_COLOR if result.ok else ERROR_COLOR
             self.after(0, lambda: self.result_label.configure(text=f"{message} ({suffix})", text_color=color))
 

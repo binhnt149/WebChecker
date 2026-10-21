@@ -175,6 +175,14 @@ class SiteChecker:
 
     async def _check_auth_web(self, monitor: dict[str, Any]) -> CheckResult:
         headers = self._base_headers(monitor)
+        # PrimeFaces AJAX headers belong on the login POST only. Sending them on
+        # the page GETs can make JSF return a short partial-response XML instead
+        # of the HTML needed for login form parsing or Verify text assertions.
+        ajax_header_names = {"faces-request", "x-requested-with"}
+        page_headers = {
+            key: value for key, value in headers.items()
+            if key.lower() not in ajax_header_names
+        }
         login_url = monitor.get("auth_login_url") or monitor.get("url")
         verify_url = monitor.get("auth_verify_url") or monitor.get("url")
         username_field = monitor.get("auth_username_field") or "username"
@@ -190,7 +198,12 @@ class SiteChecker:
 
         start = time.perf_counter()
         async with httpx.AsyncClient(http2=True, timeout=self._timeout(monitor), follow_redirects=True) as client:
-            login_page_response = await client.get(str(login_url), headers=headers)
+            try:
+                login_page_response = await client.get(str(login_url), headers=page_headers)
+            except (httpx.HTTPError, httpx.InvalidURL) as exc:
+                return CheckResult(False, "down", error=f"Login page failed: could not open Login URL {login_url}: {exc}", details={"phase": "login", "login_url": str(login_url)})
+            if login_page_response.status_code >= 400:
+                return CheckResult(False, "down", status_code=login_page_response.status_code, error=f"Login page failed: Login URL {login_url} returned HTTP {login_page_response.status_code}", details={"phase": "login", "login_url": str(login_page_response.url)})
             login_page_url = str(login_page_response.url)
             form_data, post_url, form_details = self._auth_form_payload(
                 login_page_response,
@@ -202,8 +215,16 @@ class SiteChecker:
                 extra_fields=extra_fields,
             )
             post_headers = dict(headers)
+            if str(form_data.get("javax.faces.partial.ajax") or "").lower() == "true":
+                if not any(key.lower() == "faces-request" for key in post_headers):
+                    post_headers["Faces-Request"] = "partial/ajax"
+                if not any(key.lower() == "x-requested-with" for key in post_headers):
+                    post_headers["X-Requested-With"] = "XMLHttpRequest"
             post_headers.setdefault("Referer", str(login_page_response.url))
-            login_response = await client.post(post_url, data=form_data, headers=post_headers)
+            try:
+                login_response = await client.post(post_url, data=form_data, headers=post_headers)
+            except (httpx.HTTPError, httpx.InvalidURL) as exc:
+                return CheckResult(False, "down", error=f"Login failed: could not submit credentials to {post_url}: {exc}", details={"phase": "login", **form_details})
             if login_response.status_code >= 400:
                 response_ms = int((time.perf_counter() - start) * 1000)
                 return CheckResult(
@@ -211,13 +232,20 @@ class SiteChecker:
                     "down",
                     response_ms=response_ms,
                     status_code=login_response.status_code,
-                    error=f"Login failed with HTTP {login_response.status_code}",
+                    error=f"Login failed: submitting credentials to {post_url} returned HTTP {login_response.status_code}",
                     details={"phase": "login", **form_details},
                 )
-            verify_response = await client.get(str(verify_url), headers=headers)
+            try:
+                verify_response = await client.get(str(verify_url), headers=page_headers)
+            except (httpx.HTTPError, httpx.InvalidURL) as exc:
+                return CheckResult(False, "down", error=f"Verify failed: could not open Verify URL {verify_url}: {exc}", details={"phase": "verify", "verify_url": str(verify_url), **form_details})
 
         response_ms = int((time.perf_counter() - start) * 1000)
         result = self._assert_response(monitor, verify_response, response_ms)
+        if not result.ok:
+            result.error = f"Verify failed: Verify URL {verify_url} returned HTTP {result.status_code}. {result.error}"
+            result.details.update({"phase": "verify", "verify_url": str(verify_response.url), **form_details})
+            return result
         verify_text = monitor.get("auth_verify_text") or ""
         if result.ok and not verify_text and self._is_login_page(verify_response.url, str(login_url), login_page_url):
             return CheckResult(
@@ -225,7 +253,7 @@ class SiteChecker:
                 "down",
                 response_ms=response_ms,
                 status_code=verify_response.status_code,
-                error="Authentication did not leave the login page; check credentials or set Auth verify text",
+                error=f"Login failed: Verify URL {verify_url} still shows the login page. Check the credentials or set Verify text to confirm a successful login.",
                 details={**self._response_details(verify_response, phase="verify"), **form_details},
             )
         if result.ok and verify_text and not contains_expected_text(verify_response.text, str(verify_text)):
@@ -234,7 +262,7 @@ class SiteChecker:
                 "down",
                 response_ms=response_ms,
                 status_code=verify_response.status_code,
-                error=self._missing_text_error("Authentication verification text was not found", verify_response, str(verify_text)),
+                error="Verify failed: " + self._missing_text_error("Verify text was not found", verify_response, str(verify_text)),
                 details={**self._response_details(verify_response, missing_text=str(verify_text), phase="verify"), **form_details},
             )
         result.details["phase"] = "verify"
