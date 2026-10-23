@@ -346,6 +346,74 @@ Ví dụ với `https://at.npc.com.vn:8031`:
 
 Trang này có hidden field `__RequestVerificationToken` thay đổi theo phiên. Không copy token này vào Excel/app; SiteSentry tự lấy token mới từ trang login trước khi POST.
 
+#### Lấy thông tin form bằng DevTools Console
+
+SiteSentry không chạy Java trong trình duyệt; các đoạn dưới đây là **JavaScript** chạy trong Console của Chrome/Edge. Chúng chỉ đọc cấu trúc trang hiện tại, không gửi form và không đọc/in mật khẩu, cookie hoặc giá trị token.
+
+1. Mở URL đăng nhập khi đang ở trạng thái chưa đăng nhập.
+2. Mở DevTools (`F12`) → **Console**. Nếu Chrome hiện cảnh báo dán mã, chỉ nhập `allow pasting` khi bạn đã tự đọc và hiểu đoạn mã. Sau đó dán đoạn “Kiểm tra form đăng nhập” và nhấn Enter.
+3. Chọn đúng form đăng nhập trong kết quả (trang có thể có nhiều form). Dùng `action` làm Login URL; xem `method`, username/password field và các tên hidden field. Nếu form được dựng trong iframe, chọn frame đó trong Console trước khi chạy mã.
+4. Điền username/password field đúng theo thuộc tính `name` trong form. Hidden field được SiteSentry tự lấy lại ở mỗi lần kiểm tra; không chép token hay giá trị hidden vào cấu hình. `Extra login fields JSON` chỉ dành cho field phụ mà form cần nhưng không tự có trong HTML ban đầu.
+5. Đăng nhập thủ công bằng trình duyệt. Trên trang đích đã đăng nhập, chạy đoạn “Gợi ý Verify text” để tìm một chuỗi ổn định, chỉ xuất hiện sau đăng nhập. Nhập URL trang đó vào Verify URL (để trống nếu muốn dùng Protected URL).
+6. Chạy **Test Run** trong SiteSentry. Nếu thất bại, mở DevTools → **Network**, chọn request đăng nhập thành công, rồi đối chiếu Request URL/Method, tên field và Request Headers. JavaScript trong Console không thể đọc đầy đủ các header do trình duyệt quản lý; không cần chép toàn bộ header trình duyệt vào `Headers JSON`. SiteSentry tự đặt Content-Type cho form và Referer của POST; chỉ thêm header tùy chỉnh khi máy chủ thực sự yêu cầu. Không chia sẻ mật khẩu, cookie, giá trị token hoặc dữ liệu phiên.
+
+**Kiểm tra form đăng nhập** (chạy ở trang login):
+
+```javascript
+(() => {
+  const redact = (value) => value ? "<có giá trị; đã ẩn>" : "<rỗng>";
+  const forms = [...document.forms].map((form, index) => ({
+    form: index,
+    action: new URL(form.getAttribute("action") || location.href, location.href).href,
+    method: (form.method || "get").toUpperCase(),
+    enctype: form.enctype,
+    fields: [...form.elements]
+      .filter((el) => el.name)
+      .map((el) => ({
+        name: el.name,
+        id: el.id || "",
+        type: (el.type || el.tagName).toLowerCase(),
+        autocomplete: el.autocomplete || "",
+        required: Boolean(el.required),
+        disabled: Boolean(el.disabled),
+        value: redact(el.value)
+      }))
+  }));
+  console.log({
+    pageUrl: location.href,
+    origin: location.origin,
+    forms,
+    note: "Chỉ dùng name của hidden field để đối chiếu. SiteSentry tự lấy giá trị hidden mới theo phiên."
+  });
+})();
+```
+
+Kết quả cung cấp URL trang login, URL/action gửi POST, method, enctype, `name`/`id`/loại của input và tên các hidden field. Với form login thông thường, chọn tên input có `type: "text"` hoặc `email` làm Username field và `type: "password"` làm Password field. Giá trị field bị ẩn có chủ ý.
+
+**Gợi ý Verify text** (chạy sau khi đăng nhập thành công):
+
+```javascript
+(() => {
+  const visible = (el) => {
+    const style = getComputedStyle(el);
+    const rect = el.getBoundingClientRect();
+    return style.visibility !== "hidden" && style.display !== "none" && rect.width > 0 && rect.height > 0;
+  };
+  const candidates = [...document.querySelectorAll("h1,h2,h3,[role='heading'],nav a,button,[role='button']")]
+    .filter(visible)
+    .map((el) => (el.innerText || el.getAttribute("aria-label") || "").replace(/\s+/g, " ").trim())
+    .filter((text) => text.length >= 2 && text.length <= 100);
+  console.log({
+    currentUrl: location.href,
+    title: document.title,
+    candidates: [...new Set(candidates)].slice(0, 50),
+    note: "Chọn một chuỗi ổn định chỉ có sau khi đăng nhập; kiểm tra chuỗi đó có trong response HTML mà SiteSentry nhận được."
+  });
+})();
+```
+
+Đoạn Verify chỉ gợi ý text nhìn thấy trong DOM; một số ứng dụng render nội dung bằng JavaScript nên nội dung đó có thể không xuất hiện trong HTML mà checker HTTP nhận được. Nếu vậy, chọn text có sẵn trong response HTML hoặc dùng một endpoint verify phù hợp. `document.cookie` không được đọc hoặc in ra: cookie phiên là dữ liệu nhạy cảm và trình duyệt cũng ẩn cookie `HttpOnly` khỏi JavaScript.
+
 ### API
 
 | Thông số | Bắt buộc | Mặc định | Mô tả |
