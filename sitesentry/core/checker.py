@@ -225,6 +225,26 @@ class SiteChecker:
                 login_response = await client.post(post_url, data=form_data, headers=post_headers)
             except (httpx.HTTPError, httpx.InvalidURL) as exc:
                 return CheckResult(False, "down", error=f"Login failed: could not submit credentials to {post_url}: {exc}", details={"phase": "login", **form_details})
+            login_redirect = next(
+                (
+                    str(response.headers["location"])
+                    for response in login_response.history
+                    if "location" in response.headers
+                ),
+                "",
+            )
+            login_post_cookie_names = sorted(
+                {
+                    raw_cookie.split("=", 1)[0].strip()
+                    for response in [*login_response.history, login_response]
+                    for raw_cookie in response.headers.get_list("set-cookie")
+                    if "=" in raw_cookie
+                }
+            )
+            login_post_status = login_response.status_code
+            login_post_final_url = str(login_response.url)
+            login_post_field_names = sorted(form_data)
+            login_post_preview = response_preview(login_response.text)[:240]
             if login_response.status_code >= 400:
                 response_ms = int((time.perf_counter() - start) * 1000)
                 return CheckResult(
@@ -244,7 +264,19 @@ class SiteChecker:
         result = self._assert_response(monitor, verify_response, response_ms)
         if not result.ok:
             result.error = f"Verify failed: Verify URL {verify_url} returned HTTP {result.status_code}. {result.error}"
-            result.details.update({"phase": "verify", "verify_url": str(verify_response.url), **form_details})
+            result.details.update(
+                {
+                    "phase": "verify",
+                    "verify_url": str(verify_response.url),
+                    "login_post_redirect": login_redirect,
+                    "login_post_status": login_post_status,
+                    "login_post_final_url": login_post_final_url,
+                    "login_post_cookie_names": login_post_cookie_names,
+                    "login_post_field_names": login_post_field_names,
+                    "login_post_preview": login_post_preview,
+                    **form_details,
+                }
+            )
             return result
         verify_text = monitor.get("auth_verify_text") or ""
         if result.ok and not verify_text and self._is_login_page(verify_response.url, str(login_url), login_page_url):
@@ -254,7 +286,16 @@ class SiteChecker:
                 response_ms=response_ms,
                 status_code=verify_response.status_code,
                 error=f"Login failed: Verify URL {verify_url} still shows the login page. Check the credentials or set Verify text to confirm a successful login.",
-                details={**self._response_details(verify_response, phase="verify"), **form_details},
+                details={
+                    **self._response_details(verify_response, phase="verify"),
+                    "login_post_redirect": login_redirect,
+                    "login_post_status": login_post_status,
+                    "login_post_final_url": login_post_final_url,
+                    "login_post_cookie_names": login_post_cookie_names,
+                    "login_post_field_names": login_post_field_names,
+                    "login_post_preview": login_post_preview,
+                    **form_details,
+                },
             )
         if result.ok and verify_text and not contains_expected_text(verify_response.text, str(verify_text)):
             return CheckResult(
@@ -263,7 +304,16 @@ class SiteChecker:
                 response_ms=response_ms,
                 status_code=verify_response.status_code,
                 error="Verify failed: " + self._missing_text_error("Verify text was not found", verify_response, str(verify_text)),
-                details={**self._response_details(verify_response, missing_text=str(verify_text), phase="verify"), **form_details},
+                details={
+                    **self._response_details(verify_response, missing_text=str(verify_text), phase="verify"),
+                    "login_post_redirect": login_redirect,
+                    "login_post_status": login_post_status,
+                    "login_post_final_url": login_post_final_url,
+                    "login_post_cookie_names": login_post_cookie_names,
+                    "login_post_field_names": login_post_field_names,
+                    "login_post_preview": login_post_preview,
+                    **form_details,
+                },
             )
         result.details["phase"] = "verify"
         result.details.update(form_details)

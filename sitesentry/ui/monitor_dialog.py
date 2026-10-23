@@ -575,6 +575,18 @@ class MonitorDialog(ctk.CTkToplevel):
         def worker() -> None:
             result = asyncio.run(self.app.checker.check_monitor(data))
             message = "UP" if result.ok else f"DOWN: {result.error}"
+            if not result.ok and data.get("monitor_type") == "auth_web":
+                redirect = result.details.get("login_post_redirect") or "none"
+                post_status = result.details.get("login_post_status", "unknown")
+                cookie_names = result.details.get("login_post_cookie_names") or []
+                cookies = ", ".join(cookie_names) if cookie_names else "none"
+                field_names = ", ".join(result.details.get("login_post_field_names") or []) or "none"
+                post_preview = result.details.get("login_post_preview") or "empty response"
+                message += (
+                    f" [Login POST HTTP {post_status}; redirect: {redirect}; "
+                    f"Set-Cookie names: {cookies}; fields sent: {field_names}; "
+                    f"response: {post_preview}]"
+                )
             http_info = f"HTTP {result.status_code}, " if result.status_code is not None else ""
             response_ms = result.response_ms if result.response_ms is not None else "-"
             suffix = f"{http_info}{response_ms} ms, attempts {result.attempts}"
