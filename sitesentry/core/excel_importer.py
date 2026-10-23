@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from contextlib import closing
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -41,6 +42,8 @@ MONITOR_COLUMNS = [
     "retry_count",
     "retry_delay_seconds",
     "cooldown_minutes",
+    "language",
+    "web_server",
 ]
 
 TYPE_ALIASES = {
@@ -92,6 +95,8 @@ def create_monitor_template(path: str | Path) -> Path:
     examples = [
         {
             "name": "Homepage",
+            "language": "PHP",
+            "web_server": "Apache",
             "monitor_type": "simple_web",
             "enabled": 1,
             "url": "https://example.com",
@@ -107,6 +112,8 @@ def create_monitor_template(path: str | Path) -> Path:
         },
         {
             "name": "Health API",
+            "language": "Python",
+            "web_server": "Nginx",
             "monitor_type": "api",
             "enabled": 1,
             "url": "https://api.example.com/health",
@@ -125,6 +132,8 @@ def create_monitor_template(path: str | Path) -> Path:
         },
         {
             "name": "Member Portal",
+            "language": "ASP.NET",
+            "web_server": "IIS",
             "monitor_type": "auth_web",
             "enabled": 0,
             "url": "https://example.com/dashboard",
@@ -157,8 +166,12 @@ def create_monitor_template(path: str | Path) -> Path:
 
 
 def import_monitors_from_excel(db: Database, path: str | Path) -> ImportResult:
+    with closing(load_workbook(path, read_only=True, data_only=True)) as workbook:
+        return _import_workbook(db, workbook)
+
+
+def _import_workbook(db: Database, wb: Any) -> ImportResult:
     result = ImportResult()
-    wb = load_workbook(path, read_only=True, data_only=True)
     ws = wb["Monitors"] if "Monitors" in wb.sheetnames else wb.active
 
     rows = ws.iter_rows(values_only=True)
@@ -265,6 +278,7 @@ def _normalize_monitor(values: dict[str, Any]) -> dict[str, Any]:
         "retry_count": max(1, as_int(values.get("retry_count"), 3)),
         "retry_delay_seconds": max(0.0, as_float(values.get("retry_delay_seconds"), 2.0)),
         "cooldown_minutes": max(0, as_int(values.get("cooldown_minutes"), 30)),
+        **{key: str(values.get(key) or "").strip() for key in ("language", "web_server") if key in values},
     }
 
 
@@ -300,7 +314,8 @@ def _style_template_sheet(ws: Any) -> None:
     for cell in ws[1]:
         cell.fill = header_fill
         cell.font = header_font
-        cell.alignment = Alignment(horizontal="center", vertical="center")
+        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    ws.row_dimensions[1].height = 34
     ws.freeze_panes = "A2"
     ws.auto_filter.ref = f"A1:{ws.cell(row=1, column=len(MONITOR_COLUMNS)).coordinate}"
     widths = {
@@ -321,6 +336,7 @@ def _style_template_sheet(ws: Any) -> None:
         letter = column_cells[0].column_letter
         ws.column_dimensions[letter].width = widths.get(letter, 18)
     for row in ws.iter_rows(min_row=2):
+        ws.row_dimensions[row[0].row].height = 42
         for cell in row:
             cell.alignment = Alignment(vertical="top", wrap_text=True)
 
@@ -346,6 +362,8 @@ def _add_instructions(wb: Workbook) -> None:
         ("monitor_type", "Yes", "simple_web, auth_web, or api."),
         ("enabled", "No", "1/TRUE/yes to enable, 0/FALSE/no to disable."),
         ("url", "Yes", "Target website, protected page, or API endpoint."),
+        ("language", "No", "Application language/framework, for example PHP, Python, Java, ASP.NET."),
+        ("web_server", "No", "Web server, for example Apache, Nginx, IIS, Tomcat."),
         ("headers_json", "No", "JSON object, for example {\"Accept\":\"application/json\"}."),
         ("body", "No", "Request body for API methods such as POST/PUT/PATCH."),
         ("api_token", "No", "Stored encrypted after import."),
@@ -362,5 +380,6 @@ def _add_instructions(wb: Workbook) -> None:
     ws.column_dimensions["B"].width = 14
     ws.column_dimensions["C"].width = 100
     for row in ws.iter_rows():
+        ws.row_dimensions[row[0].row].height = 34 if row[0].row > 1 else 24
         for cell in row:
             cell.alignment = Alignment(vertical="top", wrap_text=True)

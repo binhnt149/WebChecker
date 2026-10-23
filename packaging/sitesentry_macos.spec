@@ -1,11 +1,13 @@
 # -*- mode: python ; coding: utf-8 -*-
 
 from pathlib import Path
+from runpy import run_path
 
 from PyInstaller.utils.hooks import collect_data_files
 
 
 PROJECT_ROOT = Path(SPECPATH).resolve().parent
+VERSION = run_path(str(PROJECT_ROOT / "sitesentry" / "__init__.py"))["__version__"]
 
 datas = [
     (str(PROJECT_ROOT / "config.json"), "."),
@@ -20,6 +22,7 @@ hiddenimports = [
     "apscheduler.jobstores.memory",
     "apscheduler.schedulers.background",
     "apscheduler.triggers.interval",
+    "apscheduler.triggers.cron",
     "pystray._base",
     "pystray._darwin",
 ]
@@ -70,8 +73,8 @@ app = BUNDLE(
     info_plist={
         "CFBundleName": "SiteSentry Desktop",
         "CFBundleDisplayName": "SiteSentry Desktop",
-        "CFBundleShortVersionString": "1.0.0",
-        "CFBundleVersion": "1.0.0",
+        "CFBundleShortVersionString": VERSION,
+        "CFBundleVersion": VERSION,
         "NSHighResolutionCapable": True,
     },
 )

@@ -17,7 +17,8 @@ mkdir -p "$PYINSTALLER_CONFIG_DIR"
 
 if command -v codesign >/dev/null 2>&1; then
   xattr -cr "dist/${APP_NAME}.app" || true
-  codesign --force --deep --sign - "dist/${APP_NAME}.app" || true
+  codesign --force --deep --sign - "dist/${APP_NAME}.app"
+  codesign --verify --deep --strict "dist/${APP_NAME}.app"
 fi
 
 rm -f "dist/${DMG_NAME}"

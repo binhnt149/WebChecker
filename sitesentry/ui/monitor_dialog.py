@@ -88,6 +88,8 @@ class MonitorDialog(ctk.CTkToplevel):
         self.retry_count_var = tk.StringVar(value="3")
         self.retry_delay_var = tk.StringVar(value="2")
         self.cooldown_var = tk.StringVar(value="30")
+        self.language_var = tk.StringVar()
+        self.web_server_var = tk.StringVar()
 
         self._entry(
             frame,
@@ -113,12 +115,13 @@ class MonitorDialog(ctk.CTkToplevel):
         self._entry(frame, "Interval (sec)", self.interval_var, 1, 0, required=True, placeholder="60")
         self._entry(frame, "Timeout (sec)", self.timeout_var, 1, 1, required=True, placeholder="10")
         self._entry(frame, "Retries", self.retry_count_var, 1, 2, required=True, placeholder="3")
-        self._entry(frame, "Retry delay", self.retry_delay_var, 1, 3, required=True, placeholder="2")
-        self._entry(frame, "Cooldown (min)", self.cooldown_var, 1, 4, required=True, placeholder="30")
+        self._entry(frame, "Retry delay", self.retry_delay_var, 1, 3, columnspan=3, required=True, placeholder="2")
 
+        self._entry(frame, "Language", self.language_var, 2, 0, columnspan=3, placeholder="PHP, Python, Java, .NET...")
+        self._entry(frame, "Web server", self.web_server_var, 2, 3, columnspan=3, placeholder="Nginx, Apache, IIS...")
         self.expected_text = bind_focus_on_click(ctk.CTkTextbox(frame, height=48))
-        ctk.CTkLabel(frame, text="Expected text").grid(row=4, column=0, padx=8, pady=(6, 0), sticky="w")
-        self.expected_text.grid(row=5, column=0, columnspan=6, padx=8, pady=(0, 6), sticky="ew")
+        ctk.CTkLabel(frame, text="Expected text").grid(row=6, column=0, padx=8, pady=(6, 0), sticky="w")
+        self.expected_text.grid(row=7, column=0, columnspan=6, padx=8, pady=(0, 6), sticky="ew")
 
     def _build_tabs(self) -> None:
         self.tabs = ctk.CTkTabview(self, corner_radius=8)
@@ -371,6 +374,8 @@ class MonitorDialog(ctk.CTkToplevel):
             return
 
         self.name_var.set(str(monitor.get("name") or ""))
+        self.language_var.set(str(monitor.get("language") or ""))
+        self.web_server_var.set(str(monitor.get("web_server") or ""))
         self.enabled_var.set(bool(monitor.get("enabled", True)))
         self.interval_var.set(str(monitor.get("interval_seconds") or 60))
         self.timeout_var.set(str(monitor.get("timeout_seconds") or 10))
@@ -433,6 +438,8 @@ class MonitorDialog(ctk.CTkToplevel):
         data: dict[str, Any] = {
             "id": self.monitor.get("id"),
             "name": self.name_var.get().strip(),
+            "language": self.language_var.get().strip(),
+            "web_server": self.web_server_var.get().strip(),
             "enabled": self.enabled_var.get(),
             "monitor_type": monitor_type,
             "url": url,

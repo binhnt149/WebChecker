@@ -20,12 +20,15 @@ Các tính năng chính:
 - Thêm/sửa/xóa monitor bằng giao diện tab theo từng loại Web/Auth/API.
 - Đánh dấu trường bắt buộc và cảnh báo khi thiếu hoặc nhập sai thông tin.
 - Import Excel danh sách monitor và xuất file mẫu Excel.
-- Lưu log kiểm tra vào SQLite, xem log trong app và xuất CSV.
+- Lưu log kiểm tra vào SQLite, chọn khoảng ngày/giờ bằng lịch, xuất Excel/CSV.
+- Báo cáo downtime theo khoảng thời gian, xuất Excel gồm thống kê và chi tiết từng đợt sự cố.
 - Chạy kiểm tra thủ công từng monitor hoặc toàn bộ monitor.
 - Scheduler chạy nền định kỳ cho các monitor đang bật.
 - Retry guard: thử lại nhiều lần trước khi kết luận lỗi.
 - SMTP HTML alert khi monitor down và email recovery khi monitor phục hồi.
-- Cooldown theo từng monitor để tránh spam email cảnh báo.
+- Nhiều quy tắc email độc lập: DOWN/UP một lần theo chuyển trạng thái, chỉ phục hồi, hoặc tổng hợp Dashboard theo lịch.
+- Nhiều người nhận, tùy chỉnh chủ đề/nội dung email và hàng đợi gửi lại khi SMTP lỗi.
+- Khai báo ngôn ngữ/framework và web server cho Web/Auth Web/API, hỗ trợ import Excel.
 - Mã hóa thông tin nhạy cảm trước khi lưu DB.
 - Hỗ trợ chạy ẩn dưới system tray trên Windows/macOS/Linux khi tray khả dụng.
 
@@ -56,13 +59,19 @@ sitesentry/
 │   ├── database.py        # SQLite schema, CRUD monitor/log/settings
 │   ├── checker.py         # Engine kiểm tra Web/Auth/API bằng httpx async
 │   ├── scheduler.py       # Lập lịch APScheduler và gọi checker định kỳ
-│   ├── notifier.py        # SMTP email alert, HTML template, cooldown
+│   ├── notifier.py        # SMTP HTML, hàng đợi và gửi lại từng người nhận
+│   ├── email_rules.py     # Quy tắc email, kiểm tra người nhận và mẫu nội dung
+│   ├── reports.py         # Tính downtime và xuất Excel thống kê/chi tiết
 │   └── excel_importer.py  # Tạo template Excel và import monitor hàng loạt
 ├── ui/
 │   ├── main_window.py     # App chính, sidebar, view routing, scheduler/tray integration
 │   ├── dashboard_view.py  # Dashboard, danh sách monitor, import Excel, quick actions
 │   ├── monitor_dialog.py  # Dialog thêm/sửa monitor theo tab Web/Auth/API
-│   ├── logs_view.py       # Xem log, lọc trạng thái, export CSV, xóa log
+│   ├── logs_view.py       # Bảng log, lọc ngày/giờ, export Excel/CSV
+│   ├── reports_view.py    # Báo cáo thống kê theo khoảng thời gian
+│   ├── datetime_picker.py # Lịch chọn ngày, giờ, phút, giây
+│   ├── email_rule_dialog.py # Thêm/sửa lịch và nội dung email
+│   ├── background.py      # Tác vụ nền, trả kết quả qua queue UI
 │   ├── settings_view.py   # SMTP/theme/settings và test email
 │   └── focus.py           # Helper xử lý focus/click cho ô nhập liệu
 ├── main.py                # Entry point, kiểm tra Python runtime rồi mở app
@@ -109,7 +118,7 @@ Các trường bắt buộc được đánh dấu `*`. Khi người dùng bấm 
 
 Logs View dùng để xem lịch sử kiểm tra gần nhất, lọc theo trạng thái `all/up/down`, lọc theo khoảng thời gian, export Excel/CSV hoặc xóa log.
 
-Settings View dùng để cấu hình SMTP, bật/tắt STARTTLS, người gửi, người nhận, mật khẩu SMTP, cooldown mặc định và theme giao diện.
+Settings View có tab `SMTP` để cấu hình máy chủ/người nhận/theme và tab `Email schedules` để quản lý nhiều quy tắc cảnh báo, lịch tổng hợp và nội dung email. Mục `Statistics` trên sidebar tạo báo cáo downtime theo khoảng thời gian.
 
 ## Luồng kiểm tra monitor
 
@@ -155,10 +164,13 @@ Nếu lần kiểm tra đầu tiên lỗi, checker sẽ thử lại đến khi t
 
 Sau khi có kết quả:
 
-1. Scheduler so sánh trạng thái mới với trạng thái cũ.
-2. Nếu monitor chuyển sang `down`, app kiểm tra cooldown rồi gửi email cảnh báo.
-3. Nếu monitor trước đó `down` và nay `up`, app gửi email recovery.
-4. Khi gửi email thành công, app lưu `last_alert_at` hoặc `last_recovery_alert_at` để áp dụng cooldown cho lần sau.
+1. Scheduler ghi log, cập nhật trạng thái và tạo sự kiện email trong cùng một transaction SQLite.
+2. Với quy tắc `DOWN and recovery`, lần đầu `unknown/up -> down` tạo một cảnh báo. Các lần `down -> down` tiếp theo không tạo thêm email, kể cả sau khi khởi động lại app.
+3. Khi `down -> up`, app tạo một email phục hồi. `up -> up` không gửi email. Một đợt DOWN mới vẫn được cảnh báo ngay, không bị chặn bởi cooldown của đợt trước.
+4. Worker riêng xử lý hàng đợi SMTP, không chặn scheduler hoặc giao diện. Khi gửi lỗi, chờ ít nhất một phút rồi thử lại; mỗi quy tắc giữ thứ tự DOWN trước UP. Hàng đợi tồn tại sau khi khởi động lại.
+5. Khi SMTP bị tắt, app vẫn ghi log nhưng không tạo email cảnh báo/tổng hợp mới. Quy tắc bị tắt tạm dừng hàng đợi của chính nó; xóa quy tắc sẽ xóa hàng đợi tương ứng.
+
+`cooldown_minutes` cũ được giữ trong DB/file import để tương thích, nhưng không áp dụng cho cơ chế cảnh báo theo chuyển trạng thái mới.
 
 Email cảnh báo là HTML email gồm tên monitor, loại monitor, URL, trạng thái, HTTP status, response time, số lần thử, thời điểm kiểm tra và lỗi chi tiết.
 
@@ -179,11 +191,14 @@ Khi app đọc monitor/settings từ database, các trường này được gi�
 
 ## Dữ liệu và schema chính
 
-SQLite có ba nhóm bảng chính:
+SQLite có các nhóm bảng chính:
 
 - `monitors`: cấu hình monitor, trạng thái cuối, thời điểm kiểm tra cuối, thông tin cooldown alert.
 - `logs`: lịch sử từng lần kiểm tra, gồm status, HTTP code, response time, error, attempts và detail JSON.
 - `settings`: cấu hình ứng dụng và SMTP; các setting nhạy cảm được đánh dấu secret và mã hóa.
+- `email_rules`: lịch, loại cảnh báo, người nhận và nội dung email.
+- `notification_events`: sự kiện DOWN/UP hoặc bản chụp báo cáo tổng hợp.
+- `email_deliveries`: trạng thái gửi, số lần thử, lỗi SMTP và người nhận còn cần gửi lại.
 
 Database bật `PRAGMA foreign_keys = ON` và `journal_mode = WAL` để hỗ trợ ghi/đọc ổn định trong quá trình app chạy nền.
 
@@ -198,9 +213,70 @@ Khi người dùng bấm nút đóng cửa sổ, app sẽ ẩn xuống tray thay
 Màn hình Logs hỗ trợ:
 
 - Lọc trạng thái `all`, `up`, `down`.
-- Lọc theo khoảng thời gian bằng `From` và `To`, định dạng `YYYY-MM-DD` hoặc `YYYY-MM-DD HH:MM:SS`.
+- Bấm `From`/`To` để chọn ngày trên lịch và giờ/phút/giây bằng nút tăng giảm. `Apply` xác nhận; `Clear` bỏ giới hạn ở đầu/cuối khoảng thời gian.
 - Xuất Excel `.xlsx` theo đúng bộ lọc đang chọn.
 - Xuất CSV theo đúng bộ lọc đang chọn.
+
+Bảng hiển thị tối đa 500 log gần nhất. File xuất lấy toàn bộ log khớp bộ lọc, không bị giới hạn 500 dòng. Truy vấn và xuất file chạy nền. Xóa log cũng làm mất dữ liệu để tính báo cáo lịch sử.
+
+## Quy tắc và lịch email
+
+1. Mở `Settings > SMTP`, bật `Enable SMTP alerts`, nhập host, port, STARTTLS, tài khoản/mật khẩu và địa chỉ gửi. Mật khẩu SMTP được mã hóa bằng Fernet.
+2. Ô `Recipients` nhận nhiều địa chỉ, phân cách bằng dấu phẩy, chấm phẩy hoặc xuống dòng. Bấm `Save`, sau đó `Test Email` để kiểm tra kết nối thật.
+3. Mở `Email schedules > Add schedule` để tạo nhiều quy tắc độc lập. Lần đầu nâng cấp, app tự tạo một quy tắc `Incident alerts` dùng danh sách người nhận SMTP hiện có.
+
+| Event | Thời điểm gửi |
+| --- | --- |
+| `DOWN and recovery` | Ngay khi kết luận DOWN sau retry guard, rồi một email khi UP trở lại. Không nhắc lại DOWN liên tiếp. |
+| `Recovery only` | Chỉ gửi khi chuyển từ DOWN sang UP. |
+| `Daily summary` | Theo giờ/phút và các thứ được chọn, dùng múi giờ máy đang chạy app. |
+
+Mỗi quy tắc có thể bật/tắt, sửa/xóa, đặt người nhận riêng; để trống sẽ dùng `SMTP > Recipients`. Các quy tắc được xử lý độc lập, nên cùng một người nằm trong hai quy tắc phù hợp sẽ nhận hai email theo cấu hình đó.
+
+Với `Daily summary`, chọn `today` để tổng hợp từ 00:00 đến lúc gửi, hoặc `yesterday` để tổng hợp ngày hôm trước. Nút `Send now` tạo thêm một bản tổng hợp ngay; mỗi lần bấm là một yêu cầu riêng. Nội dung HTML gồm tổng số monitor, UP/DOWN/Unknown và bảng downtime từng monitor. App phải đang chạy (có thể ẩn tray), máy không ngủ và SMTP phải được bật; app không tự gửi bù những lịch đã qua khi máy tắt. Cùng lịch trong cùng ngày không tự tạo trùng khi đồng bộ lại scheduler.
+
+`Subject` và `Message` hỗ trợ các biến sau (biến không phù hợp loại email được thay bằng chuỗi trống):
+
+| Biến | Nội dung |
+| --- | --- |
+| `{monitor_name}`, `{url}` | Tên và URL monitor, dùng cho email sự cố/phục hồi. |
+| `{status}`, `{checked_at}`, `{error}` | DOWN/UP, thời điểm kiểm tra và lỗi; email tổng hợp có status SUMMARY. |
+| `{date}` | Ngày kiểm tra hoặc ngày báo cáo. |
+| `{total}`, `{up}`, `{down}`, `{unknown}` | Thống kê trạng thái monitor của báo cáo tổng hợp. |
+| `{down_count}`, `{downtime}` | Tổng số log DOWN và tổng thời gian DOWN của báo cáo tổng hợp. |
+
+Ví dụ chủ đề: `[Vận hành] {status}: {monitor_name}`. Nội dung tự nhập là văn bản, được escape an toàn khi đưa vào HTML. Bật `Include default HTML report` để bổ sung nội dung bên dưới mẫu mặc định; bỏ chọn để thay hoàn toàn mẫu mặc định (khi đó Message bắt buộc). Dùng `{{` và `}}` để hiển thị dấu ngoặc nhọn.
+
+Khi SMTP chỉ chấp nhận một phần danh sách, app lưu các địa chỉ bị từ chối và chỉ thử lại những địa chỉ đó. Chống trùng dựa trên trạng thái và hàng đợi lưu trong DB; SMTP không bảo đảm exactly-once nếu tiến trình bị dừng đúng lúc server đã nhận thư nhưng app chưa kịp lưu xác nhận.
+
+## Báo cáo thống kê downtime
+
+Mở `Statistics`, chọn `From`/`To`, bấm `Generate` và `Export Excel`. Thời gian tính theo giờ cục bộ của app.
+
+| Chỉ tiêu | Cách tính |
+| --- | --- |
+| Monitor name | Tên Web/Auth Web/API. Monitor đã xóa vẫn có thể xuất hiện từ log lịch sử. |
+| DOWN count | Số dòng log có Status DOWN trong khoảng chọn, không phải số đợt sự cố. |
+| Incidents | Số chuỗi DOWN liên tiếp cho đến UP, có giao với khoảng chọn. |
+| Total DOWN | Tổng thời gian từ DOWN đầu tiên đến UP của từng đợt, chỉ tính phần nằm trong khoảng chọn. |
+| Average DOWN | Total DOWN chia Incidents; bằng 0 nếu không có sự cố. |
+| Open | Số đợt chưa có UP tại thời điểm kết thúc quan sát. |
+
+Ví dụ: DOWN lúc 10:00, DOWN lúc 10:05, UP lúc 10:10, DOWN lúc 11:00 và UP lúc 11:20 cho kết quả 3 lần DOWN, 2 đợt, tổng 30 phút, trung bình 15 phút/đợt.
+
+App lấy trạng thái cuối trước `From` để nhận biết sự cố kéo dài từ trước kỳ. Nếu chưa có UP, thời gian được tạm tính đến `min(To, thời điểm tạo báo cáo)` và đánh dấu Open, không giả định đã phục hồi. Trung bình có bao gồm phần tạm tính này. Thời gian là ước lượng theo các lần kiểm tra, không phải thời điểm hạ tầng thực sự ngừng hoạt động; khoảng app không chạy vẫn có thể được tính liên tục nếu log trước đó là DOWN. Xóa log sẽ làm giảm khả năng xác định các khoảng này. Log của các monitor đã xóa cùng tên được gộp theo tên vì DB cũ không giữ ID sau khi xóa.
+
+File Excel có sheet `Statistics` và `Incidents` để đối chiếu từng khoảng DOWN. Ngày giờ là giá trị Excel thật; thời lượng là số với định dạng `[h]:mm:ss`, hỗ trợ tổng vượt 24 giờ và có thể cộng/tính tiếp trong Excel.
+
+Hai cột metadata `language` và `web_server` nằm cuối file mẫu import (AC/AD), áp dụng cho cả ba loại monitor. File mẫu cũ thiếu hai cột này vẫn import được và không xóa metadata đã khai báo. Nếu file có cột nhưng giá trị trống thì metadata được xóa theo dữ liệu nhập.
+
+## Kiểm thử các chức năng mới
+
+```bash
+./scripts/python3.10 -m unittest discover -s tests -v
+```
+
+Kiểm thử dùng DB/Fernet key tạm và SMTP giả lập, không gửi thư thật. Kiểm tra GUI trên máy có màn hình bằng `SITESENTRY_GUI_TEST=1 ./scripts/python3.10 -m unittest discover -s tests -p test_ui_smoke.py -v` (PowerShell: đặt `$env:SITESENTRY_GUI_TEST="1"` trước khi chạy `python -m unittest ...`).
 
 ## Build file cài đặt
 
@@ -228,7 +304,32 @@ Kết quả:
 - `dist\SiteSentry Desktop.exe`
 - `dist\SiteSentry-Desktop-Windows.zip`
 
-Repo cũng có GitHub Actions workflow tại `.github/workflows/build.yml`. Khi push tag dạng `v1.0.0` hoặc chạy `workflow_dispatch`, GitHub Actions sẽ build cả macOS DMG và Windows EXE, rồi upload artifact trong trang Actions.
+Repo có GitHub Actions workflow tại `.github/workflows/build.yml`, chạy kiểm thử và build trên Windows x64, macOS Intel và macOS Apple Silicon. Push lên `main` hoặc chạy `Actions > Build and release SiteSentry Desktop > Run workflow` sẽ tạo các artifact để tải trong trang Actions. Pull request cũng được kiểm thử/build nhưng không phát hành.
+
+### Phát hành phiên bản lên GitHub Releases
+
+1. Đổi `__version__` trong `sitesentry/__init__.py` theo dạng `X.Y.Z`, cập nhật `RELEASE_NOTES.md`.
+2. Commit và push lên `main`.
+3. Tạo và push tag trùng phiên bản, ví dụ với phiên bản hiện tại:
+
+```bash
+git tag -a v1.1.0 -m "Release SiteSentry Desktop 1.1.0"
+git push origin v1.1.0
+```
+
+Workflow dùng Python 3.12 trên cả ba runner (Python 3.10 chưa có runner macOS arm64 tương ứng trong manifest của setup-python). Workflow kiểm tra tag phải khớp `__version__`, chạy test trên từng nền tảng rồi build bằng PyInstaller. Chỉ khi cả ba nền tảng thành công, job `Publish GitHub Release` mới gom đủ bốn file, tạo `SHA256SUMS.txt`, tải lên bản nháp và công bố Release. Job phát hành dùng `GITHUB_TOKEN` với quyền `contents: write`, không cần thêm PAT vào source code.
+
+Các file của phiên bản `1.1.0`:
+
+- `SiteSentry-Desktop-v1.1.0-Windows-x64.exe`
+- `SiteSentry-Desktop-v1.1.0-Windows-x64.zip`
+- `SiteSentry-Desktop-v1.1.0-macOS-x64.dmg`
+- `SiteSentry-Desktop-v1.1.0-macOS-arm64.dmg`
+- `SHA256SUMS.txt`
+
+Tải tại [GitHub Releases](https://github.com/binhnt149/WebChecker/releases); theo dõi kết quả/log tại [GitHub Actions](https://github.com/binhnt149/WebChecker/actions). Nếu build lỗi, Release không được công bố; sửa lỗi bằng commit mới và phát hành phiên bản/tag mới, không ghi đè tag đã phát hành. Có thể chạy lại job khi lỗi tạm thời (mạng/runner).
+
+Windows EXE là bản portable, không cần cài Python; ZIP chứa cùng file EXE. Trên macOS chọn DMG đúng loại chip, mở rồi kéo app vào Applications. Các gói chưa có chứng chỉ ký của nhà phát hành hoặc Apple notarization, nên Windows SmartScreen/macOS Gatekeeper có thể cảnh báo. Không kèm DB, Fernet key hay mật khẩu cục bộ trong gói phát hành.
 
 Lưu ý: Windows `.exe` phải được build trên Windows hoặc runner Windows của GitHub Actions. macOS không thể tạo Windows `.exe` native bằng PyInstaller một cách đáng tin cậy nếu không dùng môi trường Windows.
 
@@ -291,6 +392,8 @@ Nếu cột `id` có giá trị và monitor tồn tại, app sẽ cập nhật m
 | `id` | Excel import | Không | Trống | ID monitor hiện có. Có giá trị thì import sẽ cập nhật monitor đó. Để trống để tạo mới hoặc cập nhật theo `name` + `url`. |
 | `name` | Tất cả | Có | - | Tên hiển thị của monitor trên Dashboard và trong log/email cảnh báo. |
 | `monitor_type` | Tất cả | Có | `simple_web` | Loại monitor: `simple_web`, `auth_web`, hoặc `api`. |
+| `language` | Tất cả | Không | Trống | Ngôn ngữ/framework ứng dụng, ví dụ PHP, Python, Java, ASP.NET. Metadata mô tả, không thay đổi cách gửi HTTP. |
+| `web_server` | Tất cả | Không | Trống | Web server, ví dụ Apache, Nginx, IIS, Tomcat. Metadata mô tả, không thay đổi cơ chế xác thực. |
 | `enabled` | Tất cả | Không | `1` | Bật/tắt lịch kiểm tra. Nhận `1`, `0`, `TRUE`, `FALSE`, `yes`, `no`. |
 | `url` | Tất cả | Có | - | URL cần kiểm tra. Với Auth Web là trang được bảo vệ; với API là endpoint. |
 | `method` | API, Web | Không | `GET` | HTTP method. API hỗ trợ `GET`, `POST`, `PUT`, `PATCH`, `DELETE`. Web thường dùng `GET`. |
@@ -301,7 +404,7 @@ Nếu cột `id` có giá trị và monitor tồn tại, app sẽ cập nhật m
 | `headers_json` | Tất cả | Không | `{}` | Header request dạng JSON object, ví dụ `{"Accept":"application/json"}`. Dữ liệu này được mã hóa khi lưu DB. |
 | `retry_count` | Tất cả | Không | `3` | Số lần thử trước khi kết luận lỗi, giúp giảm báo động giả. |
 | `retry_delay_seconds` | Tất cả | Không | `2` | Thời gian nghỉ giữa các lần retry. |
-| `cooldown_minutes` | Tất cả | Không | `30` | Thời gian chống spam email cảnh báo cho cùng một monitor. |
+| `cooldown_minutes` | Import cũ | Không | `30` | Giữ để tương thích dữ liệu cũ; không dùng trong cơ chế email theo chuyển trạng thái mới. |
 
 ### Web
 

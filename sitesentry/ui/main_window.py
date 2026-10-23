@@ -24,6 +24,7 @@ from sitesentry.core.security import SecurityManager
 
 from .dashboard_view import DashboardView
 from .logs_view import LogsView
+from .reports_view import ReportsView
 from .settings_view import SettingsView
 
 
@@ -119,6 +120,7 @@ class SiteSentryApp(ctk.CTk):
         ctk.CTkButton(sidebar, text="Dashboard", command=lambda: self.show_view("Dashboard")).grid(row=1, column=0, padx=18, pady=6, sticky="ew")
         ctk.CTkButton(sidebar, text="Logs", command=lambda: self.show_view("Logs")).grid(row=2, column=0, padx=18, pady=6, sticky="ew")
         ctk.CTkButton(sidebar, text="Settings", command=lambda: self.show_view("Settings")).grid(row=3, column=0, padx=18, pady=6, sticky="ew")
+        ctk.CTkButton(sidebar, text="Statistics", command=lambda: self.show_view("Statistics")).grid(row=4, column=0, padx=18, pady=6, sticky="ew")
         self.status_label = ctk.CTkLabel(sidebar, textvariable=self.status_text, text_color="#94a3b8", justify="left", wraplength=176)
         self.status_label.grid(row=5, column=0, padx=18, pady=12, sticky="sw")
         self.tray_button = ctk.CTkButton(sidebar, text="Hide to Tray", command=self.hide_to_tray, fg_color="#475569")
@@ -138,6 +140,8 @@ class SiteSentryApp(ctk.CTk):
             view = LogsView(self.content, self)
         elif name == "Settings":
             view = SettingsView(self.content, self)
+        elif name == "Statistics":
+            view = ReportsView(self.content, self)
         else:
             view = DashboardView(self.content, self)
         self._current_view = view

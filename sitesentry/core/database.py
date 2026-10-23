@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 import threading
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from .email_rules import normalize_rule
 from .security import SecurityManager
 
 
@@ -125,8 +127,62 @@ class Database:
                 CREATE INDEX IF NOT EXISTS idx_logs_checked_at ON logs(checked_at DESC);
                 CREATE INDEX IF NOT EXISTS idx_logs_monitor_id ON logs(monitor_id);
                 CREATE INDEX IF NOT EXISTS idx_monitors_enabled ON monitors(enabled);
+
+                CREATE TABLE IF NOT EXISTS email_rules (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL,
+                    rule_type TEXT NOT NULL DEFAULT 'incident',
+                    enabled INTEGER NOT NULL DEFAULT 1,
+                    recipients TEXT NOT NULL DEFAULT '',
+                    hour INTEGER NOT NULL DEFAULT 18,
+                    minute INTEGER NOT NULL DEFAULT 0,
+                    weekdays TEXT NOT NULL DEFAULT 'mon,tue,wed,thu,fri,sat,sun',
+                    report_period TEXT NOT NULL DEFAULT 'today',
+                    subject_template TEXT NOT NULL DEFAULT '[SiteSentry] {status}: {monitor_name}',
+                    body_template TEXT NOT NULL DEFAULT '',
+                    include_details INTEGER NOT NULL DEFAULT 1,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS notification_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    event_key TEXT NOT NULL UNIQUE,
+                    kind TEXT NOT NULL,
+                    payload_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS email_deliveries (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    event_id INTEGER NOT NULL REFERENCES notification_events(id) ON DELETE CASCADE,
+                    rule_id INTEGER NOT NULL REFERENCES email_rules(id) ON DELETE CASCADE,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    attempts INTEGER NOT NULL DEFAULT 0,
+                    last_attempt_at TEXT,
+                    sent_at TEXT,
+                    remaining_recipients_json TEXT,
+                    error TEXT NOT NULL DEFAULT '',
+                    UNIQUE(event_id, rule_id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_deliveries_status ON email_deliveries(status, last_attempt_at);
                 """
             )
+            columns = {row["name"] for row in self._conn.execute("PRAGMA table_info(monitors)")}
+            for column in ("language", "web_server"):
+                if column not in columns:
+                    self._conn.execute(f"ALTER TABLE monitors ADD COLUMN {column} TEXT NOT NULL DEFAULT ''")
+            delivery_columns = {row["name"] for row in self._conn.execute("PRAGMA table_info(email_deliveries)")}
+            if "remaining_recipients_json" not in delivery_columns:
+                self._conn.execute("ALTER TABLE email_deliveries ADD COLUMN remaining_recipients_json TEXT")
+            initialized = self._conn.execute("SELECT 1 FROM settings WHERE key = 'email_rules_initialized'").fetchone()
+            if not initialized:
+                stamp = now_iso()
+                self._conn.execute(
+                    "INSERT INTO email_rules (name, created_at, updated_at) VALUES (?, ?, ?)",
+                    ("Incident alerts", stamp, stamp),
+                )
+                self._conn.execute(
+                    "INSERT INTO settings (key, value, updated_at) VALUES ('email_rules_initialized', '1', ?)", (stamp,),
+                )
 
     def close(self) -> None:
         with self._lock:
@@ -147,6 +203,8 @@ class Database:
             "monitor_type": str(data.get("monitor_type") or "simple_web"),
             "enabled": 1 if data.get("enabled", True) else 0,
             "url": str(data.get("url") or "").strip(),
+            "language": str(data.get("language") or "").strip(),
+            "web_server": str(data.get("web_server") or "").strip(),
             "method": str(data.get("method") or "GET").upper(),
             "interval_seconds": max(10, as_int(data.get("interval_seconds"), 60)),
             "timeout_seconds": max(1.0, as_float(data.get("timeout_seconds"), 10.0)),
@@ -194,10 +252,16 @@ class Database:
         return self._monitor_row_to_dict(row)
 
     def save_monitor(self, data: dict[str, Any]) -> int:
-        payload = self._monitor_payload(data)
         stamp = now_iso()
         monitor_id = data.get("id")
         with self._lock, self._conn:
+            data = dict(data)
+            if monitor_id and ("language" not in data or "web_server" not in data):
+                existing = self._conn.execute("SELECT language, web_server FROM monitors WHERE id = ?", (monitor_id,)).fetchone()
+                if existing:
+                    for field in ("language", "web_server"):
+                        data.setdefault(field, existing[field])
+            payload = self._monitor_payload(data)
             if monitor_id:
                 payload["updated_at"] = stamp
                 assignments = ", ".join(f"{key} = ?" for key in payload)
@@ -330,6 +394,144 @@ class Database:
     def clear_logs(self) -> None:
         with self._lock, self._conn:
             self._conn.execute("DELETE FROM logs")
+
+    def report_logs(self, start_at: str, end_at: str) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self._conn.execute(
+                """
+                WITH earlier AS (
+                    SELECT *, ROW_NUMBER() OVER (
+                        PARTITION BY CASE WHEN monitor_id IS NULL THEN 'name:' || monitor_name ELSE 'id:' || monitor_id END
+                        ORDER BY checked_at DESC, id DESC
+                    ) AS position
+                    FROM logs WHERE checked_at < ?
+                )
+                SELECT id, monitor_id, monitor_name, status, checked_at FROM earlier WHERE position = 1
+                UNION ALL
+                SELECT id, monitor_id, monitor_name, status, checked_at FROM logs WHERE checked_at >= ? AND checked_at <= ?
+                ORDER BY checked_at, id
+                """, (start_at, start_at, end_at),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def list_email_rules(self, enabled_only: bool = False) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self._conn.execute("SELECT * FROM email_rules" + (" WHERE enabled = 1" if enabled_only else "") + " ORDER BY id").fetchall()
+        return [dict(row) for row in rows]
+
+    def get_email_rule(self, rule_id: int) -> dict[str, Any] | None:
+        with self._lock:
+            row = self._conn.execute("SELECT * FROM email_rules WHERE id = ?", (rule_id,)).fetchone()
+        return dict(row) if row else None
+
+    def save_email_rule(self, data: dict[str, Any]) -> int:
+        payload = normalize_rule(data)
+        stamp = now_iso()
+        with self._lock, self._conn:
+            if data.get("id"):
+                payload["updated_at"] = stamp
+                fields = ", ".join(f"{key} = ?" for key in payload)
+                self._conn.execute(f"UPDATE email_rules SET {fields} WHERE id = ?", [*payload.values(), int(data["id"])])
+                return int(data["id"])
+            payload.update(created_at=stamp, updated_at=stamp)
+            columns = ", ".join(payload)
+            values = ", ".join("?" for _ in payload)
+            cursor = self._conn.execute(f"INSERT INTO email_rules ({columns}) VALUES ({values})", list(payload.values()))
+            return int(cursor.lastrowid)
+
+    def delete_email_rule(self, rule_id: int) -> None:
+        with self._lock, self._conn:
+            self._conn.execute("DELETE FROM email_rules WHERE id = ?", (rule_id,))
+
+    def _queue_event(self, event_key: str, kind: str, payload: dict[str, Any], rule_ids: list[int]) -> int:
+        cursor = self._conn.execute(
+            "INSERT OR IGNORE INTO notification_events (event_key, kind, payload_json, created_at) VALUES (?, ?, ?, ?)",
+            (event_key, kind, json.dumps(payload, ensure_ascii=False), now_iso()),
+        )
+        if cursor.rowcount:
+            event_id = int(cursor.lastrowid)
+            self._conn.executemany("INSERT INTO email_deliveries (event_id, rule_id) VALUES (?, ?)", [(event_id, rule_id) for rule_id in rule_ids])
+            return event_id
+        return 0
+
+    def queue_summary(self, rule_id: int, slot: str, report: dict[str, Any]) -> int:
+        with self._lock, self._conn:
+            rule = self._conn.execute("SELECT * FROM email_rules WHERE id = ? AND enabled = 1 AND rule_type = 'daily_summary'", (rule_id,)).fetchone()
+            if not rule:
+                return 0
+            return self._queue_event(f"summary:{rule_id}:{slot}", "daily_summary", {"report": report}, [rule_id])
+
+    def record_check_result(self, monitor_id: int, result: Any) -> bool:
+        status = "up" if result.ok else "down"
+        with self._lock, self._conn:
+            row = self._conn.execute("SELECT * FROM monitors WHERE id = ?", (monitor_id,)).fetchone()
+            if row is None or not row["enabled"]:
+                return False
+            monitor = dict(row)
+            cursor = self._conn.execute(
+                """INSERT INTO logs (monitor_id, monitor_name, status, ok, response_ms, status_code,
+                    error, attempts, checked_at, detail_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (monitor_id, monitor["name"], status, int(result.ok), result.response_ms, result.status_code,
+                 result.error, result.attempts, result.checked_at, result.detail_json()),
+            )
+            self._conn.execute(
+                """UPDATE monitors SET last_status = ?, last_status_code = ?, last_response_ms = ?,
+                    last_error = ?, last_checked_at = ?, updated_at = ? WHERE id = ?""",
+                (status, result.status_code, result.response_ms, result.error, result.checked_at, now_iso(), monitor_id),
+            )
+            old = monitor["last_status"]
+            kind = "down" if status == "down" and old != "down" else ("recovery" if status == "up" and old == "down" else "")
+            smtp_setting = self._conn.execute("SELECT value FROM settings WHERE key = 'smtp_enabled'").fetchone()
+            if kind and smtp_setting and smtp_setting["value"] == "1":
+                types = ("incident", "recovery_only") if kind == "recovery" else ("incident",)
+                rules = self._conn.execute("SELECT id, rule_type FROM email_rules WHERE enabled = 1").fetchall()
+                ids = [rule["id"] for rule in rules if rule["rule_type"] in types]
+                if ids:
+                    safe_monitor = {key: monitor[key] for key in ("id", "name", "url", "monitor_type", "language", "web_server")}
+                    payload = {"monitor": safe_monitor, "result": {
+                        "ok": result.ok, "status": status, "response_ms": result.response_ms,
+                        "status_code": result.status_code, "error": result.error,
+                        "attempts": result.attempts, "checked_at": result.checked_at,
+                    }}
+                    self._queue_event(f"log:{cursor.lastrowid}:{kind}", kind, payload, ids)
+            return True
+
+    def pending_email_deliveries(self, now: datetime | None = None) -> list[dict[str, Any]]:
+        cutoff = ((now or datetime.now()) - timedelta(minutes=1)).isoformat(timespec="seconds")
+        with self._lock:
+            rows = self._conn.execute(
+                """SELECT d.id AS delivery_id, d.event_id, d.attempts, d.remaining_recipients_json, e.kind, e.payload_json, r.*
+                   FROM email_deliveries d JOIN notification_events e ON e.id = d.event_id
+                   JOIN email_rules r ON r.id = d.rule_id
+                   WHERE r.enabled = 1 AND d.status != 'sent'
+                     AND (d.last_attempt_at IS NULL OR d.last_attempt_at <= ?)
+                     AND NOT EXISTS (
+                         SELECT 1 FROM email_deliveries prior WHERE prior.rule_id = d.rule_id
+                           AND prior.event_id < d.event_id AND prior.status != 'sent'
+                     )
+                   ORDER BY d.event_id, d.id LIMIT 100""", (cutoff,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def mark_delivery_attempt(self, delivery_id: int) -> None:
+        with self._lock, self._conn:
+            self._conn.execute("UPDATE email_deliveries SET attempts = attempts + 1, last_attempt_at = ? WHERE id = ?", (now_iso(), delivery_id))
+
+    def set_delivery_recipients(self, delivery_id: int, recipients: list[str]) -> None:
+        with self._lock, self._conn:
+            self._conn.execute("UPDATE email_deliveries SET remaining_recipients_json = ? WHERE id = ?", (json.dumps(recipients), delivery_id))
+
+    def finish_email_delivery(self, delivery_id: int, sent: bool, error: str = "") -> None:
+        with self._lock, self._conn:
+            self._conn.execute(
+                "UPDATE email_deliveries SET status = ?, sent_at = ?, error = ? WHERE id = ?",
+                ("sent" if sent else "failed", now_iso() if sent else None, "" if sent else error, delivery_id),
+            )
+
+    def email_delivery_counts(self) -> dict[str, int]:
+        with self._lock:
+            rows = self._conn.execute("SELECT status, COUNT(*) AS total FROM email_deliveries GROUP BY status").fetchall()
+        return {row["status"]: row["total"] for row in rows}
 
     def get_setting(self, key: str, default: str = "") -> str:
         with self._lock:

@@ -8,6 +8,9 @@ if (-not $python) {
 }
 
 & $python -m pip install -r requirements.txt -r requirements-build.txt
+if ($LASTEXITCODE -ne 0) {
+    throw "Installing build dependencies failed."
+}
 
 if (Test-Path build) {
     Remove-Item build -Recurse -Force
@@ -20,6 +23,9 @@ $env:PYINSTALLER_CONFIG_DIR = Join-Path (Get-Location) "build\pyinstaller-config
 New-Item -ItemType Directory -Force -Path $env:PYINSTALLER_CONFIG_DIR | Out-Null
 
 & $python -m PyInstaller --noconfirm packaging/sitesentry_windows.spec
+if ($LASTEXITCODE -ne 0) {
+    throw "PyInstaller failed."
+}
 
 $exePath = "dist\SiteSentry Desktop.exe"
 if (-not (Test-Path $exePath)) {

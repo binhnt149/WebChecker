@@ -20,6 +20,7 @@ hiddenimports = [
     "apscheduler.jobstores.memory",
     "apscheduler.schedulers.background",
     "apscheduler.triggers.interval",
+    "apscheduler.triggers.cron",
     "pystray._base",
     "pystray._win32",
 ]
