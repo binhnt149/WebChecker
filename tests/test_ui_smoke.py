@@ -30,6 +30,8 @@ class NativeUISmokeTests(unittest.TestCase):
                 deadline = time.monotonic() + 5
                 while time.monotonic() < deadline:
                     app.update()
+                    if errors:
+                        self.fail(f"UI callback error: {errors[-1][1]}")
                     if until():
                         for _ in range(8):
                             app.update()
@@ -53,7 +55,7 @@ class NativeUISmokeTests(unittest.TestCase):
                     ImageGrab.grab(bbox=(x, y, x + widget.winfo_width(), y + widget.winfo_height())).save(Path(folder) / f"{name}.png")
 
             try:
-                app.geometry("980x640")
+                app.geometry("980x640+40+60")
                 app.show_view("Logs")
                 logs = app._current_view
                 pump(lambda: not logs._busy)
@@ -100,8 +102,55 @@ class NativeUISmokeTests(unittest.TestCase):
                 screenshot(monitor, "auth-monitor")
                 self.assertEqual(monitor.language_var.get(), "PHP")
                 self.assertEqual(monitor.web_server_var.get(), "Apache")
+                from unittest.mock import AsyncMock
+                with patch.object(app.checker, "check_monitor", new=AsyncMock(return_value=CheckResult(False, "down", error="Read timed out", error_type="timeout"))):
+                    monitor._test_run()
+                    pump(lambda: monitor.test_button.cget("state") == "normal")
+                    self.assertIn("Website not responding", monitor.result_label.cget("text"))
                 monitor.destroy()
-                app.geometry("1160x760")
+                app.show_view("Dashboard")
+                dashboard = app._current_view
+                pump(lambda: not dashboard._busy)
+                self.assertEqual(len(dashboard.table.get_children()), 1)
+                dashboard.table.selection_set(str(monitor_id))
+                dashboard.refresh()
+                pump(lambda: not dashboard._busy)
+                self.assertEqual(dashboard.table.selection(), (str(monitor_id),))
+                dashboard.search.set("missing monitor")
+                self.assertEqual(len(dashboard.table.get_children()), 0)
+                dashboard.search.set("Portal QA")
+                self.assertEqual(len(dashboard.table.get_children()), 1)
+                for name in ["QA website", "QA API"]:
+                    app.db.save_monitor({"name": name, "url": "https://example.test", "monitor_type": "api" if "API" in name else "simple_web"})
+                dashboard.refresh()
+                pump(lambda: not dashboard._busy)
+                dashboard.search.set("")
+                dashboard.monitor_type.set("API")
+                dashboard._render()
+                self.assertEqual(len(dashboard.table.get_children()), 1)
+                dashboard.monitor_type.set("All types")
+                dashboard._render()
+                self.assertEqual(len(dashboard.table.get_children()), 3)
+                before_widgets = len(dashboard.winfo_children())
+                for index in range(500):
+                    app.db.save_monitor({"name": f"Bulk monitor {index:03d}", "url": "https://example.test"})
+                dashboard.refresh()
+                pump(lambda: not dashboard._busy)
+                self.assertEqual(len(dashboard.table.get_children()), 503)
+                self.assertEqual(len(dashboard.winfo_children()), before_widgets)
+                app.show_view("Settings")
+                settings = app._current_view
+                settings._edit_rule(app.db.list_email_rules()[0])
+                pump()
+                dialog = settings._dialog
+                dialog.geometry("640x570+60+80")
+                dialog.excluded["auth_credentials"].set(True)
+                dialog.batch_window.set("30")
+                dialog._save()
+                rule = app.db.list_email_rules()[0]
+                self.assertEqual(rule["batch_window_seconds"], 30)
+                self.assertIn("auth_credentials", rule["excluded_error_types_json"])
+                app.geometry("1160x760+40+60")
                 settings.theme_var.set("Dark")
                 self.assertTrue(settings._save())
                 app.show_view("Statistics")

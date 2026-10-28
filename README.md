@@ -32,6 +32,56 @@ Các tính năng chính:
 - Mã hóa thông tin nhạy cảm trước khi lưu DB.
 - Hỗ trợ chạy ẩn dưới system tray trên Windows/macOS/Linux khi tray khả dụng.
 
+## Giao diện và phân loại sự cố
+
+Dashboard dùng bảng monitor với tìm kiếm theo tên/URL/lỗi, bộ lọc loại monitor và trạng thái. Chọn một dòng để Run, Edit, Pause/Enable hoặc Delete; nhấp đúp để sửa. Khi cập nhật kết quả, app giữ dòng đang chọn. Truy vấn, import, test monitor và xuất file chạy nền, trả kết quả qua queue của luồng giao diện.
+
+Giao diện dùng nền trung tính Light/Dark, màu teal cho thao tác chính, xanh lá cho UP, đỏ cho DOWN và màu cảnh báo riêng. Sidebar đánh dấu màn hình đang mở. Các form dài có vùng cuộn, nút Save/Cancel luôn nằm ngoài vùng cuộn.
+
+App gom việc thu hồi các đối tượng có vòng tham chiếu về luồng Tk mỗi 2 giây. Cách này tránh font/biến Tk bị hủy trên luồng truy vấn DB hoặc mạng khi chuyển màn hình, gây chờ hoặc treo giao diện. Bộ thu gom tự động được khôi phục khi cửa sổ ứng dụng được hủy; cơ chế đếm tham chiếu của Python vẫn hoạt động bình thường. Xem [mô hình luồng Tkinter](https://docs.python.org/3.10/library/tkinter.html#threading-model) và [cơ chế thu gom của Python](https://docs.python.org/3.10/library/gc.html).
+
+Kết quả mới có mã `error_type`, được lưu riêng trong Log và `last_error_type` của monitor, không chỉ phân tích chuỗi thông báo khi gửi mail. Log cũ được giữ nguyên; các lỗi chưa có mã được đánh dấu `unknown`.
+
+| Mã lỗi | Ý nghĩa / bằng chứng |
+| --- | --- |
+| `auth_credentials` | Máy chủ trả HTTP 401 hoặc form đăng nhập trả thông báo từ chối tài khoản/mật khẩu rõ ràng. Có thể do mật khẩu, tài khoản hoặc token; không khẳng định chính xác trường nào sai. |
+| `auth_verification` | Trang xác minh vẫn là trang login hoặc không xác minh được session; có thể liên quan CAPTCHA, MFA, CSRF hay cấu hình form. Không tự coi là sai mật khẩu. |
+| `timeout` | Website/API không phản hồi trong thời gian chờ. |
+| `target_unreachable` | Không kết nối được server hoặc kết nối bị ngắt. |
+| `network_offline` | Hệ điều hành báo mạng không khả dụng/không có route, hoặc không chọn được route IPv4 lẫn IPv6 trên máy giám sát. |
+| `dns_error` | Không phân giải được tên miền/địa chỉ. |
+| `tls_error` | Chứng chỉ TLS/SSL hoặc bắt tay TLS lỗi. |
+| `http_error` | HTTP status khác giá trị mong đợi; HTTP 403 không bị gán nhầm thành sai mật khẩu. |
+| `assertion_failed` | Nội dung HTML/text hoặc JSON API không khớp điều kiện kiểm tra. |
+| `configuration_error` | URL, JSON header/form hoặc cấu hình monitor không hợp lệ. |
+| `unknown` | Chưa có đủ thông tin để phân loại. |
+
+Kiểm tra route chỉ hỏi hệ điều hành, không gửi thông tin đăng nhập hay gọi website thứ ba để dò Internet. Nhiều monitor DOWN đồng thời không đủ để kết luận máy mất mạng. Nếu LAN vẫn có route nhưng mất đường ra Internet, lỗi có thể vẫn được ghi là timeout/kết nối/DNS; app không khẳng định offline khi chưa có bằng chứng. Với lỗi xác thực rõ ràng hoặc cấu hình sai, app không lặp lại cùng yêu cầu theo retry guard để giảm nguy cơ khóa tài khoản.
+
+### Lọc và gom email sự cố
+
+Trong `Settings > Email schedules > Edit/Add schedule`:
+
+- Đánh dấu các nhóm trong `Excluded error categories` để không gửi cảnh báo DOWN thuộc nhóm đó. Log và thống kê trong app vẫn giữ đầy đủ dữ liệu.
+- `Group DOWN alerts (seconds)` mặc định 15 giây, cho phép 0–300 giây; đặt 0 để gửi riêng ngay. Những Web/Auth Web/API khác nhau cùng quy tắc trong cửa sổ này được gửi dưới dạng bảng danh sách, kể cả khi chỉ có một người nhận.
+- Mỗi cửa sổ được tính từ cảnh báo đầu tiên và không kéo dài thêm khi có monitor mới. Email UP của monitor trong nhóm sẽ đóng nhóm đó để giữ đúng thứ tự DOWN/UP; UP của monitor khác không chia tách nhóm không liên quan. Mỗi quy tắc có nhóm/người nhận/nội dung riêng; không trộn thư của hai quy tắc.
+- Không gửi lặp các kết quả DOWN liền kề. Nếu lỗi bị loại chuyển sang lỗi cần cảnh báo khi monitor vẫn DOWN, app vẫn tạo được cảnh báo mới một lần. Đợt DOWN–UP–DOWN mới của cùng monitor được giữ riêng, không bị gộp nhầm là hai monitor khác nhau.
+- Với quy tắc DOWN/recovery, sự cố bị loại không tạo email UP đơn lẻ. Nếu DOWN đã được đưa vào hàng đợi hợp lệ, UP được giữ sau DOWN để người nhận đối chiếu.
+- Đổi bộ lọc sẽ loại các thư tương ứng còn chờ và chưa bắt đầu gửi. Các lần gửi đã bắt đầu, hoặc đã được SMTP chấp nhận một phần, không thể thu hồi; app tiếp tục theo dõi người nhận còn thiếu để không gửi trùng.
+- Trạng thái hàng đợi `suppressed` nghĩa là bị bộ lọc loại, không phải lỗi SMTP.
+
+Thư tạo mới ghi nhận loại quy tắc tại thời điểm tạo. Thư từ bản cũ không có thông tin này được giữ là `legacy_unknown`, không suy đoán từ loại quy tắc hiện tại; nếu người dùng loại nhóm lỗi tương ứng thì thư cũ chưa bắt đầu gửi cũng được loại theo lựa chọn đó. Nâng cấp có thể tiếp tục an toàn sau khi bị ngắt giữa chừng, không cần xóa DB hoặc Fernet key.
+
+Email tổng hợp theo ngày loại các monitor **đang DOWN** thuộc nhóm đã chọn khỏi bảng email, đồng thời ghi số monitor bị loại. Các monitor UP vẫn giữ lịch sử trong ngày; đây không phải phép xóa từng loại lỗi khỏi số liệu lịch sử. Báo cáo đầy đủ trong app/Excel không bị bộ lọc email thay đổi.
+
+Các biến `{error_type}` và `{monitor_count}` có thể dùng trong nội dung/chủ đề email. Thư gom có tên tổng quát như `3 monitors` ở chủ đề và có tên, loại Web/Auth/API, URL, nhóm lỗi, giờ kiểm tra, thông báo lỗi của từng dòng trong nội dung. Hàng đợi, nhóm thư và danh sách người nhận SMTP còn thiếu được lưu trong SQLite để tiếp tục sau khi mở lại app.
+
+### Báo cáo và biểu mẫu
+
+Màn hình `Statistics` có KPI và ba tab `Monitors`, `Incidents`, `Error categories`. File Excel có ba sheet tương ứng `Statistics`, `Incidents`, `Error breakdown`. Phần chi tiết ghi cả các nhóm lỗi gặp trong mỗi đợt DOWN; bảng phân loại đếm số log DOWN theo từng monitor/nhóm lỗi, kể cả lỗi đã loại khỏi email.
+
+Nút `Template` xuất biểu mẫu báo cáo trống. Bản mẫu có sẵn tại `templates/sitesentry_report_template.xlsx`; đây là biểu mẫu báo cáo, không phải file để import monitor. File xuất dùng ngày giờ Excel thật, thời lượng `[h]:mm:ss`, vùng lọc, dòng tổng tính theo các dòng đang lọc và thiết lập in ngang. Các tên/nội dung từ monitor được ghi như văn bản, không thực thi thành công thức Excel.
+
 ## Công nghệ sử dụng
 
 | Thành phần | Công nghệ | Vai trò |
@@ -58,10 +108,13 @@ sitesentry/
 │   ├── security.py        # Quản lý Fernet key, encrypt/decrypt dữ liệu nhạy cảm
 │   ├── database.py        # SQLite schema, CRUD monitor/log/settings
 │   ├── checker.py         # Engine kiểm tra Web/Auth/API bằng httpx async
+│   ├── diagnostics.py     # Mã lỗi, nhận diện lỗi mạng/xác thực
 │   ├── scheduler.py       # Lập lịch APScheduler và gọi checker định kỳ
 │   ├── notifier.py        # SMTP HTML, hàng đợi và gửi lại từng người nhận
 │   ├── email_rules.py     # Quy tắc email, kiểm tra người nhận và mẫu nội dung
-│   ├── reports.py         # Tính downtime và xuất Excel thống kê/chi tiết
+│   ├── notification_store.py # Hàng đợi bền vững, lọc và gộp email sự cố
+│   ├── reports.py         # Tính downtime và thống kê nhóm lỗi
+│   ├── report_export.py   # Báo cáo/biểu mẫu Excel ba sheet
 │   └── excel_importer.py  # Tạo template Excel và import monitor hàng loạt
 ├── ui/
 │   ├── main_window.py     # App chính, sidebar, view routing, scheduler/tray integration
@@ -70,6 +123,8 @@ sitesentry/
 │   ├── logs_view.py       # Bảng log, lọc ngày/giờ, export Excel/CSV
 │   ├── reports_view.py    # Báo cáo thống kê theo khoảng thời gian
 │   ├── datetime_picker.py # Lịch chọn ngày, giờ, phút, giây
+│   ├── theme.py           # Bảng màu Light/Dark, bảng dữ liệu và KPI
+│   ├── lifecycle.py       # Thu hồi vòng tham chiếu trên luồng Tk
 │   ├── email_rule_dialog.py # Thêm/sửa lịch và nội dung email
 │   ├── background.py      # Tác vụ nền, trả kết quả qua queue UI
 │   ├── settings_view.py   # SMTP/theme/settings và test email
@@ -79,7 +134,7 @@ sitesentry/
 ├── requirements.txt       # Danh sách thư viện Python
 ├── config.json            # Cấu hình runtime ban đầu
 ├── data/                  # SQLite DB và Fernet key được sinh khi chạy
-└── templates/             # File mẫu Excel cho import monitor
+└── templates/             # File mẫu Excel import monitor và báo cáo
 ```
 
 ## Luồng khởi động ứng dụng
@@ -227,7 +282,7 @@ Bảng hiển thị tối đa 500 log gần nhất. File xuất lấy toàn bộ
 
 | Event | Thời điểm gửi |
 | --- | --- |
-| `DOWN and recovery` | Ngay khi kết luận DOWN sau retry guard, rồi một email khi UP trở lại. Không nhắc lại DOWN liên tiếp. |
+| `DOWN and recovery` | Kết luận DOWN sau retry guard, chờ cửa sổ gộp nếu đã cấu hình, rồi gửi cảnh báo và một email khi UP trở lại. Không nhắc lại DOWN liên tiếp. |
 | `Recovery only` | Chỉ gửi khi chuyển từ DOWN sang UP. |
 | `Daily summary` | Theo giờ/phút và các thứ được chọn, dùng múi giờ máy đang chạy app. |
 
@@ -266,7 +321,7 @@ Ví dụ: DOWN lúc 10:00, DOWN lúc 10:05, UP lúc 10:10, DOWN lúc 11:00 và U
 
 App lấy trạng thái cuối trước `From` để nhận biết sự cố kéo dài từ trước kỳ. Nếu chưa có UP, thời gian được tạm tính đến `min(To, thời điểm tạo báo cáo)` và đánh dấu Open, không giả định đã phục hồi. Trung bình có bao gồm phần tạm tính này. Thời gian là ước lượng theo các lần kiểm tra, không phải thời điểm hạ tầng thực sự ngừng hoạt động; khoảng app không chạy vẫn có thể được tính liên tục nếu log trước đó là DOWN. Xóa log sẽ làm giảm khả năng xác định các khoảng này. Log của các monitor đã xóa cùng tên được gộp theo tên vì DB cũ không giữ ID sau khi xóa.
 
-File Excel có sheet `Statistics` và `Incidents` để đối chiếu từng khoảng DOWN. Ngày giờ là giá trị Excel thật; thời lượng là số với định dạng `[h]:mm:ss`, hỗ trợ tổng vượt 24 giờ và có thể cộng/tính tiếp trong Excel.
+File Excel có ba sheet `Statistics`, `Incidents` và `Error breakdown` để đối chiếu tổng hợp, từng khoảng DOWN và nhóm lỗi. Ngày giờ là giá trị Excel thật; thời lượng là số với định dạng `[h]:mm:ss`, hỗ trợ tổng vượt 24 giờ và có thể cộng/tính tiếp trong Excel.
 
 Hai cột metadata `language` và `web_server` nằm cuối file mẫu import (AC/AD), áp dụng cho cả ba loại monitor. File mẫu cũ thiếu hai cột này vẫn import được và không xóa metadata đã khai báo. Nếu file có cột nhưng giá trị trống thì metadata được xóa theo dữ liệu nhập.
 
@@ -277,6 +332,8 @@ Hai cột metadata `language` và `web_server` nằm cuối file mẫu import (A
 ```
 
 Kiểm thử dùng DB/Fernet key tạm và SMTP giả lập, không gửi thư thật. Kiểm tra GUI trên máy có màn hình bằng `SITESENTRY_GUI_TEST=1 ./scripts/python3.10 -m unittest discover -s tests -p test_ui_smoke.py -v` (PowerShell: đặt `$env:SITESENTRY_GUI_TEST="1"` trước khi chạy `python -m unittest ...`).
+
+Bộ kiểm thử bao gồm phân loại lỗi HTTP/auth/mạng, nâng cấp DB cũ, lọc và gộp email, gửi lại từng người nhận, thứ tự DOWN/UP, số liệu downtime, dữ liệu Excel an toàn và vòng đời tài nguyên Tk. Kiểm thử GUI dùng 503 monitor, chuyển màn hình Light/Dark, tìm kiếm/lọc, giữ lựa chọn khi refresh và lưu lịch email.
 
 ## Build file cài đặt
 

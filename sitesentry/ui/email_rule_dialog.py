@@ -8,6 +8,8 @@ import customtkinter as ctk
 
 from sitesentry.core.email_rules import RULE_TYPES, WEEKDAYS, normalize_rule
 from .focus import bind_focus_on_click
+from .theme import polish
+from sitesentry.core.diagnostics import ERROR_TYPES, decoded_exclusions
 
 
 class EmailRuleDialog(ctk.CTkToplevel):
@@ -32,6 +34,7 @@ class EmailRuleDialog(ctk.CTkToplevel):
         self.period = tk.StringVar(value=data.get("report_period", "today"))
         self.subject = tk.StringVar(value=data.get("subject_template", ""))
         self.details = tk.BooleanVar(value=bool(data.get("include_details", 1)))
+        self.batch_window = tk.StringVar(value=str(data.get("batch_window_seconds", 15)))
         self._entry(form, "Schedule name *", self.name, 0, 0)
         ctk.CTkCheckBox(form, text="Enabled", variable=self.enabled).grid(row=1, column=1, padx=12, sticky="w")
         ctk.CTkLabel(form, text="Event").grid(row=2, column=0, padx=8, pady=(12, 0), sticky="w")
@@ -49,7 +52,7 @@ class EmailRuleDialog(ctk.CTkToplevel):
         for index, day in enumerate(WEEKDAYS):
             variable = tk.BooleanVar(value=day in selected_days)
             self.days[day] = variable
-            ctk.CTkCheckBox(days, text=day.title(), variable=variable, width=76, checkbox_width=18, checkbox_height=18).grid(row=0, column=index, padx=3)
+            ctk.CTkCheckBox(days, text=day.title(), variable=variable, width=76, checkbox_width=18, checkbox_height=18).grid(row=index // 4, column=index % 4, padx=3, pady=4)
         ctk.CTkLabel(form, text="Recipients (blank = SMTP recipients)").grid(row=5, column=0, columnspan=2, padx=8, pady=(10, 0), sticky="w")
         self.recipients = bind_focus_on_click(ctk.CTkTextbox(form, height=68))
         self.recipients.grid(row=6, column=0, columnspan=2, padx=8, sticky="ew")
@@ -60,11 +63,26 @@ class EmailRuleDialog(ctk.CTkToplevel):
         self.body.grid(row=10, column=0, columnspan=2, padx=8, sticky="ew")
         self.body.insert("1.0", data.get("body_template", ""))
         ctk.CTkCheckBox(form, text="Include default HTML report", variable=self.details).grid(row=11, column=0, columnspan=2, padx=8, pady=16, sticky="w")
+        ctk.CTkLabel(form, text="Excluded error categories").grid(row=12, column=0, columnspan=2, padx=8, pady=(8, 4), sticky="w")
+        errors = ctk.CTkFrame(form, fg_color="transparent")
+        errors.grid(row=13, column=0, columnspan=2, padx=8, sticky="ew")
+        errors.grid_columnconfigure((0, 1), weight=1)
+        excluded = decoded_exclusions(data)
+        self.excluded = {}
+        for index, (code, label) in enumerate(ERROR_TYPES.items()):
+            variable = tk.BooleanVar(value=code in excluded)
+            self.excluded[code] = variable
+            ctk.CTkCheckBox(errors, text=label, variable=variable, checkbox_width=18, checkbox_height=18, font=ctk.CTkFont(size=12)).grid(row=index // 2, column=index % 2, padx=(0, 8), pady=6, sticky="w")
+        self.grouping = ctk.CTkFrame(form, fg_color="transparent")
+        self.grouping.grid(row=14, column=0, columnspan=2, padx=8, pady=16, sticky="w")
+        ctk.CTkLabel(self.grouping, text="Group DOWN alerts (seconds)").pack(side="left", padx=(0, 12))
+        tk.Spinbox(self.grouping, from_=0, to=300, textvariable=self.batch_window, state="readonly", width=5).pack(side="left")
         actions = ctk.CTkFrame(self, fg_color="transparent")
         actions.grid(row=1, column=0, padx=24, pady=(0, 16), sticky="ew")
         ctk.CTkButton(actions, text="Save", width=96, command=self._save).pack(side="right")
         ctk.CTkButton(actions, text="Cancel", width=96, fg_color="#52525b", command=self.destroy).pack(side="right", padx=10)
         self._toggle_schedule()
+        polish(self)
         self.after(100, self.lift)
 
     def _entry(self, parent: Any, label: str, variable: tk.StringVar, row: int, column: int, span: int = 1) -> None:
@@ -74,8 +92,12 @@ class EmailRuleDialog(ctk.CTkToplevel):
     def _toggle_schedule(self) -> None:
         if self.kind.get() == RULE_TYPES["daily_summary"]:
             self.schedule.grid()
+            if hasattr(self, "grouping"):
+                self.grouping.grid_remove()
         else:
             self.schedule.grid_remove()
+            if hasattr(self, "grouping"):
+                self.grouping.grid()
 
     def _save(self) -> None:
         try:
@@ -87,6 +109,8 @@ class EmailRuleDialog(ctk.CTkToplevel):
                 "report_period": self.period.get(), "recipients": self.recipients.get("1.0", "end-1c"),
                 "subject_template": self.subject.get(), "body_template": self.body.get("1.0", "end-1c"),
                 "include_details": self.details.get(),
+                "batch_window_seconds": self.batch_window.get(),
+                "excluded_error_types": [code for code, variable in self.excluded.items() if variable.get()],
             })
             self.on_save(payload)
         except (ValueError, KeyError) as exc:

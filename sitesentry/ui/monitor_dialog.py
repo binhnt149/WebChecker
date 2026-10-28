@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import threading
 import tkinter as tk
 from tkinter import messagebox
 from typing import Any, Callable
@@ -10,6 +9,9 @@ from typing import Any, Callable
 import customtkinter as ctk
 
 from .focus import bind_focus_on_click
+from .theme import fit_wrap, polish
+from .background import run_background
+from sitesentry.core.diagnostics import error_label
 
 
 SaveCallback = Callable[[], None]
@@ -49,6 +51,7 @@ class MonitorDialog(ctk.CTkToplevel):
         self._build_tabs()
         self._build_actions()
         self._load_monitor()
+        polish(self)
         self.after(100, self._activate_dialog)
 
     def _activate_dialog(self) -> None:
@@ -303,11 +306,15 @@ class MonitorDialog(ctk.CTkToplevel):
         frame = ctk.CTkFrame(self, fg_color="transparent")
         frame.grid(row=2, column=0, padx=16, pady=(8, 16), sticky="ew")
         frame.grid_columnconfigure(0, weight=1)
-        self.result_label = ctk.CTkLabel(frame, text="Fields marked * are required.", anchor="w", justify="left", wraplength=760, text_color=INFO_COLOR)
-        self.result_label.grid(row=0, column=0, padx=0, pady=0, sticky="ew")
-        ctk.CTkButton(frame, text="Test Run", command=self._test_run, width=110).grid(row=0, column=1, padx=6)
-        ctk.CTkButton(frame, text="Cancel", command=self._close, width=90, fg_color="#475569").grid(row=0, column=2, padx=6)
-        ctk.CTkButton(frame, text="Save", command=self._save, width=90).grid(row=0, column=3, padx=(6, 0))
+        self.result_label = ctk.CTkLabel(frame, text="Not tested", anchor="w", justify="left", wraplength=760, text_color=INFO_COLOR)
+        self.result_label.grid(row=0, column=0, columnspan=5, pady=(0, 8), sticky="ew")
+        frame.bind("<Configure>", lambda event: fit_wrap(self.result_label, event.width - 12))
+        self.test_button = ctk.CTkButton(frame, text="Test Run", command=self._test_run, width=110)
+        self.test_button.grid(row=1, column=1, padx=6)
+        self.detail_button = ctk.CTkButton(frame, text="Details", command=self._show_test_details, width=82, state="disabled")
+        self.detail_button.grid(row=1, column=2, padx=6)
+        ctk.CTkButton(frame, text="Cancel", command=self._close, width=90, fg_color="#475569").grid(row=1, column=3, padx=6)
+        ctk.CTkButton(frame, text="Save", command=self._save, width=90).grid(row=1, column=4, padx=(6, 0))
 
     def _entry(
         self,
@@ -574,13 +581,15 @@ class MonitorDialog(ctk.CTkToplevel):
         self._close()
 
     def _test_run(self) -> None:
+        if self.test_button.cget("state") == "disabled":
+            return
         data = self._payload()
         if not self._validate(data):
             return
         self.result_label.configure(text="Running test...", text_color=INFO_COLOR)
+        self.test_button.configure(state="disabled")
 
-        def worker() -> None:
-            result = asyncio.run(self.app.checker.check_monitor(data))
+        def done(result: Any) -> None:
             message = "UP" if result.ok else f"DOWN: {result.error}"
             if not result.ok and data.get("monitor_type") == "auth_web":
                 redirect = result.details.get("login_post_redirect") or "none"
@@ -598,6 +607,25 @@ class MonitorDialog(ctk.CTkToplevel):
             response_ms = result.response_ms if result.response_ms is not None else "-"
             suffix = f"{http_info}{response_ms} ms, attempts {result.attempts}"
             color = SUCCESS_COLOR if result.ok else ERROR_COLOR
-            self.after(0, lambda: self.result_label.configure(text=f"{message} ({suffix})", text_color=color))
+            self._test_details = f"{error_label(result.error_type)}\n{message}\n{suffix}"
+            brief = "UP" if result.ok else f"{error_label(result.error_type)}: {result.error[:220]}"
+            self.result_label.configure(text=f"{brief} ({suffix})", text_color=color)
+            self.test_button.configure(state="normal")
+            self.detail_button.configure(state="normal")
 
-        threading.Thread(target=worker, daemon=True).start()
+        def failed(message: str) -> None:
+            self.test_button.configure(state="normal")
+            self.result_label.configure(text=message, text_color=ERROR_COLOR)
+
+        run_background(self.app, self, lambda: asyncio.run(self.app.checker.check_monitor(data)), done, failed)
+
+    def _show_test_details(self) -> None:
+        dialog = ctk.CTkToplevel(self)
+        dialog.title("Check diagnostics")
+        dialog.geometry("680x440")
+        dialog.transient(self)
+        text = ctk.CTkTextbox(dialog, wrap="word")
+        text.pack(fill="both", expand=True, padx=16, pady=16)
+        text.insert("1.0", getattr(self, "_test_details", ""))
+        text.configure(state="disabled")
+        polish(dialog)

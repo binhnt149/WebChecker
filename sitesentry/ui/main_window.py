@@ -26,6 +26,8 @@ from .dashboard_view import DashboardView
 from .logs_view import LogsView
 from .reports_view import ReportsView
 from .settings_view import SettingsView
+from .lifecycle import TkGarbageCollector
+from .theme import ACCENT, ACCENT_HOVER, CANVAS, MUTED, SELECTION, SURFACE, TEXT, polish
 
 
 def load_config() -> dict[str, Any]:
@@ -77,11 +79,13 @@ class SiteSentryApp(ctk.CTk):
         ctk.set_default_color_theme("blue")
         super().__init__()
         self._tk_thread_id = threading.get_ident()
+        self._garbage_collector = TkGarbageCollector(self)
 
         ensure_icon_files()
         self.title("SiteSentry Desktop")
         self.geometry("1160x760")
         self.minsize(980, 640)
+        self.configure(fg_color=CANVAS)
 
         self.security = SecurityManager(self.config.get("fernet_key_path", "data/fernet.key"))
         self.db = Database(self.config.get("database_path", "data/sitesentry.db"), security=self.security)
@@ -109,18 +113,25 @@ class SiteSentryApp(ctk.CTk):
         self.after(250, self._drain_result_queue)
         self.after(250, self._show_on_launch)
 
+    def destroy(self) -> None:
+        try:
+            super().destroy()
+        finally:
+            self._garbage_collector.close()
+
     def _build_layout(self) -> None:
         self.grid_columnconfigure(1, weight=1)
         self.grid_rowconfigure(0, weight=1)
 
-        sidebar = ctk.CTkFrame(self, width=220, corner_radius=0)
+        sidebar = ctk.CTkFrame(self, width=184, corner_radius=0, fg_color=SURFACE)
         sidebar.grid(row=0, column=0, sticky="nsew")
         sidebar.grid_rowconfigure(5, weight=1)
-        ctk.CTkLabel(sidebar, text="SiteSentry", font=ctk.CTkFont(size=24, weight="bold")).grid(row=0, column=0, padx=20, pady=(24, 20), sticky="w")
-        ctk.CTkButton(sidebar, text="Dashboard", command=lambda: self.show_view("Dashboard")).grid(row=1, column=0, padx=18, pady=6, sticky="ew")
-        ctk.CTkButton(sidebar, text="Logs", command=lambda: self.show_view("Logs")).grid(row=2, column=0, padx=18, pady=6, sticky="ew")
-        ctk.CTkButton(sidebar, text="Settings", command=lambda: self.show_view("Settings")).grid(row=3, column=0, padx=18, pady=6, sticky="ew")
-        ctk.CTkButton(sidebar, text="Statistics", command=lambda: self.show_view("Statistics")).grid(row=4, column=0, padx=18, pady=6, sticky="ew")
+        ctk.CTkLabel(sidebar, text="SiteSentry", font=ctk.CTkFont(size=23, weight="bold"), text_color=TEXT).grid(row=0, column=0, padx=18, pady=(28, 24), sticky="w")
+        self.nav_buttons = {}
+        for row, name in enumerate(["Dashboard", "Statistics", "Logs", "Settings"], start=1):
+            button = ctk.CTkButton(sidebar, text=name, anchor="w", width=150, height=36, corner_radius=5, text_color=MUTED, fg_color="transparent", hover_color=SELECTION, command=lambda selected=name: self.show_view(selected))
+            button.grid(row=row, column=0, padx=14, pady=4, sticky="ew")
+            self.nav_buttons[name] = button
         self.status_label = ctk.CTkLabel(sidebar, textvariable=self.status_text, text_color="#94a3b8", justify="left", wraplength=176)
         self.status_label.grid(row=5, column=0, padx=18, pady=12, sticky="sw")
         self.tray_button = ctk.CTkButton(sidebar, text="Hide to Tray", command=self.hide_to_tray, fg_color="#475569")
@@ -134,6 +145,8 @@ class SiteSentryApp(ctk.CTk):
         self.content.grid_rowconfigure(0, weight=1)
 
     def show_view(self, name: str) -> None:
+        for label, button in self.nav_buttons.items():
+            button.configure(fg_color=ACCENT if label == name else "transparent", text_color="white" if label == name else MUTED, hover_color=ACCENT_HOVER if label == name else SELECTION)
         if self._current_view is not None:
             self._current_view.destroy()
         if name == "Logs":
@@ -146,6 +159,7 @@ class SiteSentryApp(ctk.CTk):
             view = DashboardView(self.content, self)
         self._current_view = view
         view.grid(row=0, column=0, sticky="nsew")
+        polish(view)
 
     def _on_monitor_result(self, monitor: dict[str, Any], result: Any) -> None:
         self._result_queue.put((monitor, result))

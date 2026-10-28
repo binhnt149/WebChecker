@@ -11,11 +11,13 @@ from openpyxl.styles import Alignment, Font, PatternFill
 
 from .background import run_background
 from .datetime_picker import DateTimePicker
+from .theme import configure_table
+from sitesentry.core.diagnostics import ERROR_TYPES, error_label
 
 
 EXPORT_FIELDS = [
     "id", "monitor_id", "monitor_name", "status", "ok", "response_ms",
-    "status_code", "error", "attempts", "checked_at", "detail_json",
+    "status_code", "error_type", "error", "attempts", "checked_at", "detail_json",
 ]
 
 
@@ -24,6 +26,7 @@ class LogsView(ctk.CTkFrame):
         super().__init__(master, fg_color="transparent")
         self.app = app
         self._busy = False
+        self._refresh_again = False
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(1, weight=1)
         toolbar = ctk.CTkFrame(self, fg_color="transparent")
@@ -47,14 +50,16 @@ class LogsView(ctk.CTkFrame):
         self.status_filter = tk.StringVar(value="all")
         ctk.CTkLabel(status_row, text="Status").pack(side="left", padx=(0, 8))
         ctk.CTkOptionMenu(status_row, values=["all", "up", "down"], variable=self.status_filter, command=lambda _: self.refresh(), width=100).pack(side="left")
+        self.error_filter = tk.StringVar(value="All errors")
+        ctk.CTkOptionMenu(status_row, values=["All errors", *ERROR_TYPES.values()], variable=self.error_filter, command=lambda _: self.refresh(), width=280).pack(side="left", padx=12)
         ctk.CTkButton(status_row, text="Apply", command=self.refresh, width=80).pack(side="right")
         table_frame = ctk.CTkFrame(self, fg_color="transparent")
         table_frame.grid(row=1, column=0, padx=20, pady=(8, 12), sticky="nsew")
         table_frame.grid_columnconfigure(0, weight=1)
         table_frame.grid_rowconfigure(0, weight=1)
-        columns = ("monitor_name", "status", "checked_at", "response_ms", "status_code", "attempts", "error")
+        columns = ("monitor_name", "status", "checked_at", "error_type", "response_ms", "status_code", "attempts", "error")
         self.table = ttk.Treeview(table_frame, columns=columns, show="headings", style="SiteSentry.Logs.Treeview")
-        for column, title, width in zip(columns, ["Monitor", "Status", "Checked at", "Time (ms)", "HTTP", "Attempts", "Error"], [220, 80, 175, 100, 70, 80, 420]):
+        for column, title, width in zip(columns, ["Monitor", "Status", "Checked at", "Error category", "Time (ms)", "HTTP", "Attempts", "Error"], [220, 80, 175, 260, 100, 70, 80, 420]):
             self.table.heading(column, text=title)
             self.table.column(column, width=width, minwidth=60, anchor="w")
         dark = ctk.get_appearance_mode() == "Dark"
@@ -66,6 +71,7 @@ class LogsView(ctk.CTkFrame):
         horizontal = ttk.Scrollbar(table_frame, orient="horizontal", command=self.table.xview)
         horizontal.grid(row=1, column=0, sticky="ew")
         self.table.configure(yscrollcommand=vertical.set, xscrollcommand=horizontal.set)
+        configure_table(self.table)
         self.summary_label = ctk.CTkLabel(self, text="", anchor="w")
         self.summary_label.grid(row=2, column=0, padx=20, pady=(0, 12), sticky="ew")
         self.refresh()
@@ -79,28 +85,33 @@ class LogsView(ctk.CTkFrame):
 
     def refresh(self) -> None:
         if self._busy:
+            self._refresh_again = True
             return
         period = self._date_range()
         if period is None:
             return
         self._busy = True
         status = self.status_filter.get()
+        error_type = next((code for code, label in ERROR_TYPES.items() if label == self.error_filter.get()), None)
 
         def done(logs: list[dict[str, Any]]) -> None:
             self._busy = False
             children = self.table.get_children()
             if children:
                 self.table.delete(*children)
-            for item in logs:
-                values = tuple("-" if item.get(field) is None else item.get(field, "") for field in self.table["columns"])
-                self.table.insert("", "end", values=values, tags=(item["status"],))
+            for index, item in enumerate(logs):
+                values = tuple(error_label(item.get(field, "")) if field == "error_type" else ("-" if item.get(field) is None else item.get(field, "")) for field in self.table["columns"])
+                self.table.insert("", "end", values=values, tags=(item["status"], "stripe") if index % 2 else (item["status"],))
             self.summary_label.configure(text=f"Showing {len(logs)} latest log row(s)")
+            if self._refresh_again:
+                self._refresh_again = False
+                self.refresh()
 
         def failed(message: str) -> None:
             self._busy = False
             self.summary_label.configure(text=message)
 
-        run_background(self.app, self, lambda: self.app.db.list_logs(limit=500, status_filter=status, start_at=period[0], end_at=period[1]), done, failed)
+        run_background(self.app, self, lambda: self.app.db.list_logs(limit=500, status_filter=status, start_at=period[0], end_at=period[1], error_type=error_type), done, failed)
 
     def _export(self, extension: str) -> None:
         period = self._date_range()
@@ -110,9 +121,10 @@ class LogsView(ctk.CTkFrame):
         if not path:
             return
         status = self.status_filter.get()
+        error_type = next((code for code, label in ERROR_TYPES.items() if label == self.error_filter.get()), None)
 
         def work() -> int:
-            logs = self.app.db.list_logs(limit=-1, status_filter=status, start_at=period[0], end_at=period[1])
+            logs = self.app.db.list_logs(limit=-1, status_filter=status, start_at=period[0], end_at=period[1], error_type=error_type)
             if extension == "xlsx":
                 self._write_excel(logs, path)
             else:
@@ -137,7 +149,7 @@ class LogsView(ctk.CTkFrame):
             cell.font = Font(color="FFFFFF", bold=True)
         sheet.freeze_panes = "A2"
         sheet.auto_filter.ref = sheet.dimensions
-        for index, width in enumerate([8, 12, 28, 12, 8, 14, 14, 50, 10, 24, 50], start=1):
+        for index, width in enumerate([8, 12, 28, 12, 8, 14, 14, 26, 50, 10, 24, 50], start=1):
             sheet.column_dimensions[sheet.cell(1, index).column_letter].width = width
         for row in sheet:
             for cell in row:

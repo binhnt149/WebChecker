@@ -6,6 +6,7 @@ import tkinter as tk
 from typing import Any
 
 import customtkinter as ctk
+from .theme import polish
 
 
 class DateTimePicker(ctk.CTkFrame):
@@ -72,6 +73,7 @@ class DateTimeDialog(ctk.CTkToplevel):
         ctk.CTkButton(actions, text="Clear", width=72, command=self._clear).pack(side="left")
         ctk.CTkButton(actions, text="Apply", width=90, command=self._apply).pack(side="right")
         self._render()
+        polish(self)
         self.after(50, self.lift)
 
     def _spin(self, parent: Any, variable: tk.StringVar, minimum: int, maximum: int, command: Any = None, width: int = 4) -> tk.Spinbox:

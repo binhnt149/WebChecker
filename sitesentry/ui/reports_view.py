@@ -6,9 +6,12 @@ from typing import Any
 
 import customtkinter as ctk
 
+from sitesentry.core.diagnostics import error_label
+from sitesentry.core.report_export import create_report_template
 from sitesentry.core.reports import build_report, export_report, format_duration
 from .background import run_background
 from .datetime_picker import DateTimePicker
+from .theme import BAD, BLUE, MUTED, TEXT, WARNING, fit_wrap, metric, table_scrollers
 
 
 class ReportsView(ctk.CTkFrame):
@@ -20,13 +23,14 @@ class ReportsView(ctk.CTkFrame):
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(3, weight=1)
         header = ctk.CTkFrame(self, fg_color="transparent")
-        header.grid(row=0, column=0, padx=20, pady=(18, 8), sticky="ew")
+        header.grid(row=0, column=0, padx=20, pady=(20, 12), sticky="ew")
         header.grid_columnconfigure(0, weight=1)
-        ctk.CTkLabel(header, text="Statistics", font=ctk.CTkFont(size=24, weight="bold")).grid(row=0, column=0, sticky="w")
+        ctk.CTkLabel(header, text="Statistics", font=ctk.CTkFont(size=23, weight="bold")).grid(row=0, column=0, sticky="w")
+        ctk.CTkButton(header, text="Template", width=96, command=self._template).grid(row=0, column=1, padx=8)
         self.export_button = ctk.CTkButton(header, text="Export Excel", command=self._export, state="disabled", width=120)
-        self.export_button.grid(row=0, column=1)
+        self.export_button.grid(row=0, column=2)
         filters = ctk.CTkFrame(self, fg_color="transparent")
-        filters.grid(row=1, column=0, padx=20, pady=8, sticky="ew")
+        filters.grid(row=1, column=0, padx=20, pady=(0, 12), sticky="ew")
         filters.grid_columnconfigure((0, 1), weight=1)
         now = datetime.now().replace(microsecond=0)
         self.start_picker = DateTimePicker(filters, "From", datetime.combine(now.date(), time.min))
@@ -35,28 +39,34 @@ class ReportsView(ctk.CTkFrame):
         self.end_picker.grid(row=0, column=1, padx=(0, 12), sticky="ew")
         self.generate_button = ctk.CTkButton(filters, text="Generate", width=100, command=self._generate)
         self.generate_button.grid(row=0, column=2)
-        self.summary = ctk.CTkLabel(self, text="", anchor="w", wraplength=820, justify="left")
-        self.summary.grid(row=2, column=0, padx=20, pady=8, sticky="ew")
-        table_frame = ctk.CTkFrame(self, fg_color="transparent")
-        table_frame.grid(row=3, column=0, padx=20, pady=(8, 20), sticky="nsew")
-        table_frame.grid_columnconfigure(0, weight=1)
-        table_frame.grid_rowconfigure(0, weight=1)
-        columns = ("name", "checks", "incidents", "total", "average", "open", "language", "server")
-        self.table = ttk.Treeview(table_frame, columns=columns, show="headings", style="SiteSentry.Treeview")
-        for column, title, width in zip(columns, ["Monitor name", "DOWN count", "Incidents", "Total DOWN", "Average DOWN", "Open", "Language", "Web server"], [220, 110, 90, 130, 130, 60, 120, 140]):
-            self.table.heading(column, text=title)
-            self.table.column(column, width=width, minwidth=60, anchor="w" if column in {"name", "language", "server"} else "e")
-        dark = ctk.get_appearance_mode() == "Dark"
-        style = ttk.Style(self)
-        style.configure("SiteSentry.Treeview", rowheight=30, font=("Arial", 12), background="#242424" if dark else "#ffffff", fieldbackground="#242424" if dark else "#ffffff", foreground="#eeeeee" if dark else "#222222")
-        style.configure("SiteSentry.Treeview.Heading", font=("Arial", 12, "bold"))
-        self.table.grid(row=0, column=0, sticky="nsew")
-        vertical = ttk.Scrollbar(table_frame, orient="vertical", command=self.table.yview)
-        vertical.grid(row=0, column=1, sticky="ns")
-        horizontal = ttk.Scrollbar(table_frame, orient="horizontal", command=self.table.xview)
-        horizontal.grid(row=1, column=0, sticky="ew")
-        self.table.configure(xscrollcommand=horizontal.set, yscrollcommand=vertical.set)
+        metrics = ctk.CTkFrame(self, fg_color="transparent")
+        metrics.grid(row=2, column=0, padx=20, pady=(0, 8), sticky="ew")
+        self.metrics = [metric(metrics, title, index, tone) for index, (title, tone) in enumerate([
+            ("DOWN checks", BAD), ("Incidents", TEXT), ("Total DOWN", BLUE), ("Average DOWN", TEXT), ("Open incidents", WARNING),
+        ])]
+        self.tabs = ctk.CTkTabview(self, corner_radius=6)
+        self.tabs.grid(row=3, column=0, padx=20, pady=(0, 8), sticky="nsew")
+        self.table = self._table("Monitors", ("name", "checks", "incidents", "total", "average", "open", "status", "error", "language", "server"),
+            ["Monitor", "DOWN checks", "Incidents", "Total DOWN", "Average DOWN", "Open", "Status", "Error category", "Language", "Web server"],
+            [220, 110, 90, 120, 120, 64, 86, 250, 120, 140])
+        self.incident_table = self._table("Incidents", ("name", "start", "end", "recovered", "duration", "open", "error"),
+            ["Monitor", "Counted from", "Counted until", "Recovered at", "Duration", "Open", "Error categories"],
+            [220, 170, 170, 170, 120, 70, 360])
+        self.error_table = self._table("Error categories", ("name", "code", "category", "checks"),
+            ["Monitor", "Error code", "Error category", "DOWN checks"], [220, 190, 330, 120])
+        self.summary = ctk.CTkLabel(self, text="", text_color=MUTED, anchor="w", wraplength=820, justify="left")
+        self.summary.grid(row=4, column=0, padx=20, pady=(0, 16), sticky="ew")
+        self.bind("<Configure>", lambda event: fit_wrap(self.summary, event.width - 40))
         self._generate()
+
+    def _table(self, name: str, columns: tuple[str, ...], titles: list[str], widths: list[int]) -> ttk.Treeview:
+        tab = self.tabs.add(name)
+        table = ttk.Treeview(tab, columns=columns, show="headings")
+        for column, title, width in zip(columns, titles, widths):
+            table.heading(column, text=title)
+            table.column(column, width=width, minwidth=60, anchor="e" if column in {"checks", "incidents", "total", "average", "duration", "open"} else "w")
+        table_scrollers(tab, table)
+        return table
 
     def _generate(self) -> None:
         if self._busy:
@@ -73,12 +83,22 @@ class ReportsView(ctk.CTkFrame):
 
     def _show_report(self, report: dict[str, Any]) -> None:
         self.report = report
-        for item in self.table.get_children():
-            self.table.delete(item)
-        for row in report["rows"]:
-            self.table.insert("", "end", values=(row["monitor_name"], row["down_count"], row["incident_count"], format_duration(row["downtime_seconds"]), format_duration(row["average_down_seconds"]), row["open_incidents"], row["language"], row["web_server"]))
+        for table in (self.table, self.incident_table, self.error_table):
+            children = table.get_children()
+            if children:
+                table.delete(*children)
+        for index, row in enumerate(report["rows"]):
+            self.table.insert("", "end", values=(row["monitor_name"], row["down_count"], row["incident_count"], format_duration(row["downtime_seconds"]), format_duration(row["average_down_seconds"]), row["open_incidents"], row["last_status"].upper(), error_label(row["last_error_type"]), row["language"], row["web_server"]), tags=(row["last_status"], "stripe") if index % 2 else (row["last_status"],))
+            for code, count in row["error_counts"].items():
+                self.error_table.insert("", "end", values=(row["monitor_name"], code, error_label(code), count))
+        for index, incident in enumerate(report["incidents"]):
+            self.incident_table.insert("", "end", values=(incident["monitor_name"], incident["counted_from"].replace("T", " "), incident["counted_until"].replace("T", " "), (incident["recovered_at"] or "-").replace("T", " "), format_duration(incident["duration_seconds"]), "Yes" if incident["open"] else "No", ", ".join(error_label(code) for code in incident["error_types"])), tags=("stripe",) if index % 2 else ())
         incidents = sum(row["incident_count"] for row in report["rows"])
-        self.summary.configure(text=f"DOWN checks: {report['down_count']}    Incidents: {incidents}    Total DOWN: {format_duration(report['downtime_seconds'])}    As of: {report['as_of']}")
+        open_count = sum(row["open_incidents"] for row in report["rows"])
+        values = [report["down_count"], incidents, format_duration(report["downtime_seconds"]), format_duration(report["downtime_seconds"] / incidents if incidents else 0), open_count]
+        for label, value in zip(self.metrics, values):
+            label.configure(text=str(value))
+        self.summary.configure(text=f"From {report['start_at'].replace('T', ' ')} to {report['end_at'].replace('T', ' ')}   Observed through {report['as_of'].replace('T', ' ')}")
         self._busy = False
         self.generate_button.configure(state="normal")
         self.export_button.configure(state="normal")
@@ -87,6 +107,12 @@ class ReportsView(ctk.CTkFrame):
         self._busy = False
         self.generate_button.configure(state="normal")
         self.summary.configure(text=message)
+
+    def _template(self) -> None:
+        path = filedialog.asksaveasfilename(parent=self, title="Report template", initialfile="sitesentry_report_template.xlsx", defaultextension=".xlsx", filetypes=[("Excel workbook", "*.xlsx")])
+        if path:
+            start, end = self.start_picker.get(), self.end_picker.get()
+            run_background(self.app, self, lambda: create_report_template(path, start, end), lambda _: messagebox.showinfo("Report template", "Template exported.", parent=self))
 
     def _export(self) -> None:
         if self.report is None:

@@ -10,6 +10,8 @@ from sitesentry.core.email_rules import RULE_TYPES, parse_recipients
 from .background import run_background
 from .email_rule_dialog import EmailRuleDialog
 from .focus import bind_focus_on_click
+from .theme import polish
+from sitesentry.core.diagnostics import decoded_exclusions
 
 
 class SettingsView(ctk.CTkFrame):
@@ -99,6 +101,7 @@ class SettingsView(ctk.CTkFrame):
             self.app.db.set_setting(key, value)
         self.app.db.set_setting("smtp_password", self.password_var.get(), secret=True)
         ctk.set_appearance_mode(self.theme_var.get())
+        polish(self.app)
         self.app.notifier.wake()
         self.status_label.configure(text="Settings saved")
         return True
@@ -136,6 +139,10 @@ class SettingsView(ctk.CTkFrame):
             if rule["rule_type"] == "daily_summary":
                 description += f" | {rule['hour']:02d}:{rule['minute']:02d} | {rule['weekdays']} | {rule['report_period']}"
             description += " | Enabled" if rule["enabled"] else " | Disabled"
+            if rule["rule_type"] == "incident":
+                description += f" | Group {rule['batch_window_seconds']}s"
+            if decoded_exclusions(rule):
+                description += f" | {len(decoded_exclusions(rule))} excluded categories"
             ctk.CTkLabel(row, text=description, anchor="w", wraplength=500, justify="left").grid(row=1, column=0, columnspan=4, sticky="ew")
             ctk.CTkLabel(row, text=rule["recipients"] or "SMTP recipients", anchor="w", wraplength=500, justify="left").grid(row=2, column=0, columnspan=4, sticky="ew")
             if rule["rule_type"] == "daily_summary":
@@ -143,6 +150,7 @@ class SettingsView(ctk.CTkFrame):
             ctk.CTkButton(row, text="Edit", width=60, command=lambda value=rule: self._edit_rule(value)).grid(row=0, column=2, padx=4)
             ctk.CTkButton(row, text="Delete", width=64, fg_color="#991b1b", command=lambda value=rule["id"]: self._delete_rule(value)).grid(row=0, column=3, padx=4)
         self.status_label.configure(text="Email queue: " + ", ".join(f"{key}: {value}" for key, value in counts.items()) if counts else "No email deliveries yet")
+        polish(self.rules_list)
 
     def _edit_rule(self, rule: dict[str, Any] | None) -> None:
         if self._dialog is not None and self._dialog.winfo_exists():

@@ -48,7 +48,10 @@ def main() -> None:
     from sitesentry.ui.main_window import SiteSentryApp
 
     app = SiteSentryApp()
-    app.mainloop()
+    try:
+        app.mainloop()
+    finally:
+        app.destroy()
 
 
 if __name__ == "__main__":

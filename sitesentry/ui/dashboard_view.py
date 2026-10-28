@@ -1,303 +1,209 @@
 from __future__ import annotations
 
-from datetime import datetime
-import threading
 import tkinter as tk
-from tkinter import filedialog, messagebox
+from tkinter import filedialog, messagebox, ttk
 from typing import Any
 
 import customtkinter as ctk
 
+from sitesentry.core.diagnostics import error_label
 from sitesentry.core.excel_importer import create_monitor_template, import_monitors_from_excel
-
+from .background import run_background
+from .focus import bind_focus_on_click
 from .monitor_dialog import MonitorDialog
+from .theme import BAD, BLUE, GOOD, MUTED, TEXT, fit_wrap, metric, table_scrollers
 
 
-STATUS_COLORS = {
-    "up": "#16a34a",
-    "down": "#dc2626",
-    "unknown": "#64748b",
-}
-
-TYPE_LABELS = {
-    "simple_web": "Web",
-    "auth_web": "Auth",
-    "api": "API",
-}
-
-TYPE_COLORS = {
-    "simple_web": "#2563eb",
-    "auth_web": "#9333ea",
-    "api": "#0891b2",
-}
+TYPE_LABELS = {"simple_web": "Web", "auth_web": "Auth Web", "api": "API"}
 
 
 class DashboardView(ctk.CTkFrame):
     def __init__(self, master: Any, app: Any) -> None:
         super().__init__(master, fg_color="transparent")
         self.app = app
+        self._busy = False
+        self._refresh_again = False
+        self._monitors: dict[int, dict[str, Any]] = {}
+        self._dialog: MonitorDialog | None = None
         self.grid_columnconfigure(0, weight=1)
-        self.grid_rowconfigure(2, weight=1)
-
-        self.header = ctk.CTkFrame(self, fg_color="transparent")
-        self.header.grid(row=0, column=0, sticky="ew", padx=20, pady=(18, 8))
-        self.header.grid_columnconfigure(0, weight=1)
-        ctk.CTkLabel(self.header, text="Dashboard", font=ctk.CTkFont(size=24, weight="bold")).grid(row=0, column=0, sticky="w")
-        ctk.CTkButton(self.header, text="Add Monitor", command=self._add_monitor, width=120).grid(row=0, column=1, padx=6)
-        ctk.CTkButton(self.header, text="Import Excel", command=self._import_excel, width=110).grid(row=0, column=2, padx=6)
-        ctk.CTkButton(self.header, text="Template", command=self._save_template, width=90).grid(row=0, column=3, padx=6)
-        ctk.CTkButton(self.header, text="Run All", command=self.app.scheduler.run_all_now, width=90).grid(row=0, column=4, padx=6)
-        ctk.CTkButton(self.header, text="Refresh", command=self.refresh, width=90).grid(row=0, column=5, padx=(6, 0))
-
-        self.kpi_frame = ctk.CTkFrame(self, fg_color="transparent")
-        self.kpi_frame.grid(row=1, column=0, padx=20, pady=8, sticky="ew")
-        for column in range(6):
-            self.kpi_frame.grid_columnconfigure(column, weight=1)
-
-        self.list_frame = ctk.CTkScrollableFrame(self, corner_radius=8)
-        self.list_frame.grid(row=2, column=0, padx=20, pady=(8, 20), sticky="nsew")
-        self.list_frame.grid_columnconfigure(0, weight=1)
+        self.grid_rowconfigure(3, weight=1)
+        header = ctk.CTkFrame(self, fg_color="transparent")
+        header.grid(row=0, column=0, padx=20, pady=(20, 12), sticky="ew")
+        header.grid_columnconfigure(0, weight=1)
+        ctk.CTkLabel(header, text="Dashboard", font=ctk.CTkFont(size=23, weight="bold")).grid(row=0, column=0, sticky="w")
+        for column, (label, command, width) in enumerate([
+            ("Import Excel", self._import_excel, 104), ("Template", self._save_template, 84),
+            ("Run all", self.app.scheduler.run_all_now, 82), ("Add monitor", self._add_monitor, 112),
+        ], start=1):
+            ctk.CTkButton(header, text=label, command=command, width=width).grid(row=0, column=column, padx=(8, 0))
+        metrics = ctk.CTkFrame(self, fg_color="transparent")
+        metrics.grid(row=1, column=0, padx=20, pady=(0, 12), sticky="ew")
+        self.metrics = [metric(metrics, title, column, tone) for column, (title, tone) in enumerate([
+            ("Monitors", TEXT), ("UP", GOOD), ("DOWN", BAD), ("Unknown", MUTED), ("Avg response", BLUE),
+        ])]
+        filters = ctk.CTkFrame(self, fg_color="transparent")
+        filters.grid(row=2, column=0, padx=20, pady=(0, 12), sticky="ew")
+        filters.grid_columnconfigure(0, weight=1)
+        self.search = tk.StringVar()
+        self.status = tk.StringVar(value="All states")
+        self.monitor_type = tk.StringVar(value="All types")
+        bind_focus_on_click(ctk.CTkEntry(filters, textvariable=self.search, placeholder_text="Search monitor, URL or error", height=32)).grid(row=0, column=0, padx=(0, 8), sticky="ew")
+        ctk.CTkOptionMenu(filters, values=["All states", "UP", "DOWN", "Unknown", "Paused"], variable=self.status, width=122, command=lambda _: self._render()).grid(row=0, column=1, padx=(0, 8))
+        ctk.CTkOptionMenu(filters, values=["All types", *TYPE_LABELS.values()], variable=self.monitor_type, width=120, command=lambda _: self._render()).grid(row=0, column=2, padx=(0, 8))
+        ctk.CTkButton(filters, text="Refresh", width=82, command=self.refresh).grid(row=0, column=3)
+        self.search.trace_add("write", lambda *_: self._render())
+        table_frame = ctk.CTkFrame(self, fg_color="transparent")
+        table_frame.grid(row=3, column=0, padx=20, sticky="nsew")
+        columns = ("name", "type", "status", "error", "response", "checked", "url")
+        self.table = ttk.Treeview(table_frame, columns=columns, show="headings", selectmode="browse")
+        for column, title, width in zip(columns, ["Monitor", "Type", "Status", "Error category", "Response", "Last checked", "URL"], [210, 90, 86, 250, 100, 170, 320]):
+            self.table.heading(column, text=title)
+            self.table.column(column, width=width, minwidth=70, stretch=column == "name")
+        table_scrollers(table_frame, self.table)
+        self.table.bind("<<TreeviewSelect>>", lambda _: self._selection_changed())
+        self.table.bind("<Double-1>", lambda _: self._edit_selected())
+        footer = ctk.CTkFrame(self, fg_color="transparent")
+        footer.grid(row=4, column=0, padx=20, pady=(12, 16), sticky="ew")
+        footer.grid_columnconfigure(0, weight=1)
+        self.selection_label = ctk.CTkLabel(footer, text="No monitor selected", anchor="w", text_color=MUTED, wraplength=280, justify="left")
+        self.selection_label.grid(row=0, column=0, sticky="ew")
+        actions = ctk.CTkFrame(footer, fg_color="transparent")
+        actions.grid(row=0, column=1)
+        self.actions = []
+        for label, command in [("Run", self._run_selected), ("Edit", self._edit_selected), ("Pause", self._toggle_selected), ("Delete", self._delete_selected)]:
+            button = ctk.CTkButton(actions, text=label, width=70, command=command, state="disabled")
+            button.pack(side="left", padx=(6, 0))
+            self.actions.append(button)
+        self.detail = ctk.CTkLabel(footer, text="", anchor="w", justify="left", text_color=MUTED, wraplength=700, height=40)
+        self.detail.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(6, 0))
+        footer.bind("<Configure>", lambda event: fit_wrap(self.detail, event.width - 12))
         self.refresh()
 
     def refresh(self) -> None:
-        monitors = self.app.db.list_monitors(include_disabled=True)
-        for child in self.kpi_frame.winfo_children():
-            child.destroy()
-        for child in self.list_frame.winfo_children():
-            child.destroy()
-
-        total = len(monitors)
-        up = sum(1 for monitor in monitors if monitor.get("last_status") == "up")
-        down = sum(1 for monitor in monitors if monitor.get("last_status") == "down")
-        unknown = sum(1 for monitor in monitors if monitor.get("last_status") == "unknown")
-        response_values = [monitor.get("last_response_ms") for monitor in monitors if monitor.get("last_response_ms") is not None]
-        avg_ms = int(sum(response_values) / len(response_values)) if response_values else 0
-        web_count = sum(1 for monitor in monitors if monitor.get("monitor_type") == "simple_web")
-        auth_count = sum(1 for monitor in monitors if monitor.get("monitor_type") == "auth_web")
-        api_count = sum(1 for monitor in monitors if monitor.get("monitor_type") == "api")
-
-        self._kpi("Total", str(total), 0)
-        self._kpi("Up", str(up), 1, "#16a34a")
-        self._kpi("Down", str(down), 2, "#dc2626")
-        self._kpi("Unknown", str(unknown), 3, "#64748b")
-        self._kpi("Avg ms", str(avg_ms), 4, "#2563eb")
-        self._kpi("Types", f"W {web_count} / A {auth_count} / API {api_count}", 5, "#0891b2")
-
-        if not monitors:
-            self._empty_state()
+        if not self.winfo_exists():
             return
+        if self._busy:
+            self._refresh_again = True
+            return
+        self._busy = True
+        def done(monitors: list[dict[str, Any]]) -> None:
+            self._busy = False
+            self._monitors = {item["id"]: item for item in monitors}
+            responses = [item["last_response_ms"] for item in monitors if item["last_response_ms"] is not None]
+            values = [len(monitors), sum(item["last_status"] == "up" for item in monitors),
+                      sum(item["last_status"] == "down" for item in monitors), sum(item["last_status"] == "unknown" for item in monitors),
+                      f"{round(sum(responses) / len(responses))} ms" if responses else "-"]
+            for label, value in zip(self.metrics, values):
+                label.configure(text=str(value))
+            self._render()
+            if self._refresh_again:
+                self._refresh_again = False
+                self.refresh()
+        def failed(message: str) -> None:
+            self._busy = False
+            self.detail.configure(text=message)
+        run_background(self.app, self, lambda: self.app.db.list_monitors(include_disabled=True), done, failed)
 
-        for row, monitor in enumerate(monitors):
-            self._monitor_row(row, monitor)
+    def _render(self) -> None:
+        if not hasattr(self, "table"):
+            return
+        query = self.search.get().casefold()
+        selected = self.table.selection()
+        wanted = set()
+        index = 0
+        for monitor in self._monitors.values():
+            state = monitor["last_status"]
+            type_label = TYPE_LABELS.get(monitor["monitor_type"], monitor["monitor_type"])
+            if self.status.get() != "All states" and not (self.status.get() == "Paused" and not monitor["enabled"]) and self.status.get().lower() != state:
+                continue
+            if self.monitor_type.get() not in {"All types", type_label}:
+                continue
+            category = error_label(monitor.get("last_error_type", "")) if state == "down" else "-"
+            if query not in f"{monitor['name']} {monitor['url']} {category} {monitor['last_error']}".casefold():
+                continue
+            iid = str(monitor["id"])
+            wanted.add(iid)
+            checked = str(monitor.get("last_checked_at") or "Never").replace("T", " ")
+            response = f"{monitor['last_response_ms']} ms" if monitor["last_response_ms"] is not None else "-"
+            values = (monitor["name"], type_label, state.upper() if monitor["enabled"] else "PAUSED", category, response, checked, monitor["url"])
+            tags = (state, "stripe") if index % 2 else (state,)
+            if self.table.exists(iid):
+                self.table.item(iid, values=values, tags=tags)
+                self.table.move(iid, "", index)
+            else:
+                self.table.insert("", index, iid=iid, values=values, tags=tags)
+            index += 1
+        for iid in self.table.get_children():
+            if iid not in wanted:
+                self.table.delete(iid)
+        if selected and selected[0] in wanted:
+            self.table.selection_set(selected[0])
+        self._selection_changed()
 
-    def _kpi(self, label: str, value: str, column: int, color: str | None = None) -> None:
-        card = ctk.CTkFrame(self.kpi_frame, corner_radius=8)
-        card.grid(row=0, column=column, padx=6, sticky="ew")
-        ctk.CTkLabel(card, text=label, text_color="#94a3b8").pack(anchor="w", padx=14, pady=(10, 0))
-        ctk.CTkLabel(card, text=value, font=ctk.CTkFont(size=26, weight="bold"), text_color=color).pack(anchor="w", padx=14, pady=(0, 10))
+    def _selected(self) -> dict[str, Any] | None:
+        items = self.table.selection()
+        return self._monitors.get(int(items[0])) if items else None
 
-    def _empty_state(self) -> None:
-        frame = ctk.CTkFrame(self.list_frame, corner_radius=8)
-        frame.grid(row=0, column=0, padx=8, pady=18, sticky="ew")
-        frame.grid_columnconfigure(0, weight=1)
-        ctk.CTkLabel(frame, text="No monitors configured", font=ctk.CTkFont(size=18, weight="bold")).grid(row=0, column=0, padx=18, pady=(18, 4), sticky="w")
-        ctk.CTkLabel(
-            frame,
-            text="Dashboard is ready. Add a monitor to start collecting status, response time, logs, and alerts.",
-            text_color="#94a3b8",
-            wraplength=680,
-            justify="left",
-        ).grid(row=1, column=0, padx=18, pady=(0, 12), sticky="w")
-        actions = ctk.CTkFrame(frame, fg_color="transparent")
-        actions.grid(row=2, column=0, padx=12, pady=(0, 18), sticky="w")
-        ctk.CTkButton(actions, text="Add Monitor", command=self._add_monitor, width=120).grid(row=0, column=0, padx=6)
-        ctk.CTkButton(actions, text="Import Excel", command=self._import_excel, width=120).grid(row=0, column=1, padx=6)
-        ctk.CTkButton(actions, text="Template", command=self._save_template, width=100, fg_color="#475569").grid(row=0, column=2, padx=6)
+    def _selection_changed(self) -> None:
+        monitor = self._selected()
+        for button in self.actions:
+            button.configure(state="normal" if monitor else "disabled")
+        self.actions[2].configure(text="Pause" if monitor and monitor["enabled"] else "Enable")
+        if monitor:
+            self.selection_label.configure(text=str(monitor["name"]))
+            self.detail.configure(text=monitor["last_error"] if monitor["last_status"] == "down" else monitor["url"])
+        else:
+            self.selection_label.configure(text=f"{len(self.table.get_children())} monitor(s)")
+            self.detail.configure(text="No monitors" if not self._monitors else "")
 
-    def _monitor_row(self, row: int, monitor: dict[str, Any]) -> None:
-        frame = ctk.CTkFrame(self.list_frame, corner_radius=8)
-        frame.grid(row=row, column=0, padx=4, pady=6, sticky="ew")
-        frame.grid_columnconfigure(2, weight=1)
-
-        status = monitor.get("last_status") or "unknown"
-        status_color = STATUS_COLORS.get(status, "#64748b")
-        monitor_type = str(monitor.get("monitor_type") or "simple_web")
-        type_label = TYPE_LABELS.get(monitor_type, monitor_type)
-        type_color = TYPE_COLORS.get(monitor_type, "#475569")
-        enabled = bool(monitor.get("enabled"))
-
-        name = monitor.get("name") or "Untitled"
-        ctk.CTkLabel(
-            frame,
-            text=status.upper(),
-            width=82,
-            corner_radius=6,
-            fg_color=status_color,
-            text_color="#ffffff",
-            font=ctk.CTkFont(size=12, weight="bold"),
-        ).grid(row=0, column=0, rowspan=2, padx=(12, 8), pady=12, sticky="ns")
-
-        ctk.CTkLabel(
-            frame,
-            text=type_label,
-            width=58,
-            corner_radius=6,
-            fg_color=type_color,
-            text_color="#ffffff",
-            font=ctk.CTkFont(size=12, weight="bold"),
-        ).grid(row=0, column=1, padx=(0, 10), pady=(12, 2), sticky="w")
-        ctk.CTkLabel(
-            frame,
-            text="Enabled" if enabled else "Paused",
-            width=58,
-            corner_radius=6,
-            fg_color="#14532d" if enabled else "#475569",
-            text_color="#ffffff",
-            font=ctk.CTkFont(size=11),
-        ).grid(row=1, column=1, padx=(0, 10), pady=(2, 12), sticky="w")
-
-        ctk.CTkLabel(frame, text=name, font=ctk.CTkFont(size=16, weight="bold")).grid(row=0, column=2, sticky="w", pady=(10, 0))
-        url = str(monitor.get("url") or "")
-        ctk.CTkLabel(frame, text=url, text_color="#94a3b8", anchor="w").grid(row=1, column=2, sticky="ew", pady=(0, 3))
-
-        details = ctk.CTkFrame(frame, fg_color="transparent")
-        details.grid(row=2, column=2, columnspan=4, sticky="ew", pady=(0, 10))
-        for index in range(4):
-            details.grid_columnconfigure(index, weight=1)
-        self._detail(details, "Last check", self._format_time(monitor.get("last_checked_at")), 0)
-        self._detail(details, "Response", self._response_text(monitor), 1)
-        self._detail(details, "Interval", f"{monitor.get('interval_seconds') or 60}s", 2)
-        self._detail(details, "Expected", f"HTTP {monitor.get('expected_status') or 200}", 3)
-
-        if monitor.get("last_error") and status == "down":
-            ctk.CTkLabel(
-                frame,
-                text=str(monitor.get("last_error")),
-                text_color="#f87171",
-                anchor="w",
-                wraplength=760,
-            ).grid(row=3, column=2, columnspan=4, sticky="ew", pady=(0, 10))
-
-        enabled_text = "Disable" if monitor.get("enabled") else "Enable"
-        actions = ctk.CTkFrame(frame, fg_color="transparent")
-        actions.grid(row=0, column=3, rowspan=2, padx=(10, 12), pady=10, sticky="e")
-        ctk.CTkButton(actions, text="Run", width=66, command=lambda mid=monitor["id"]: self.app.scheduler.run_now(int(mid))).grid(row=0, column=0, padx=3)
-        ctk.CTkButton(actions, text="Edit", width=66, command=lambda m=monitor: self._edit_monitor(m)).grid(row=0, column=1, padx=3)
-        ctk.CTkButton(actions, text=enabled_text, width=76, command=lambda m=monitor: self._toggle_monitor(m)).grid(row=0, column=2, padx=3)
-        ctk.CTkButton(actions, text="Delete", width=76, fg_color="#991b1b", hover_color="#7f1d1d", command=lambda m=monitor: self._delete_monitor(m)).grid(row=0, column=3, padx=(3, 0))
-
-    def _meta_text(self, monitor: dict[str, Any]) -> str:
-        pieces = [
-            str(monitor.get("monitor_type") or "web"),
-            str(monitor.get("url") or ""),
-            f"every {monitor.get('interval_seconds') or 60}s",
-        ]
-        if monitor.get("last_checked_at"):
-            pieces.append(f"last {monitor.get('last_checked_at')}")
-        if monitor.get("last_response_ms") is not None:
-            pieces.append(f"{monitor.get('last_response_ms')} ms")
-        if monitor.get("last_error") and monitor.get("last_status") == "down":
-            pieces.append(str(monitor.get("last_error")))
-        return "  |  ".join(pieces)
-
-    def _detail(self, parent: Any, label: str, value: str, column: int) -> None:
-        item = ctk.CTkFrame(parent, fg_color="transparent")
-        item.grid(row=0, column=column, sticky="ew", padx=(0, 10))
-        ctk.CTkLabel(item, text=label, text_color="#64748b", font=ctk.CTkFont(size=11)).pack(anchor="w")
-        ctk.CTkLabel(item, text=value, font=ctk.CTkFont(size=12, weight="bold")).pack(anchor="w")
-
-    def _format_time(self, value: object | None) -> str:
-        if not value:
-            return "Never"
-        text = str(value)
-        try:
-            parsed = datetime.fromisoformat(text)
-        except ValueError:
-            return text
-        return parsed.strftime("%Y-%m-%d %H:%M:%S")
-
-    def _response_text(self, monitor: dict[str, Any]) -> str:
-        response_ms = monitor.get("last_response_ms")
-        status_code = monitor.get("last_status_code")
-        if response_ms is None and status_code is None:
-            return "-"
-        if status_code is None:
-            return f"{response_ms} ms"
-        if response_ms is None:
-            return f"HTTP {status_code}"
-        return f"HTTP {status_code} / {response_ms} ms"
+    def _open_dialog(self, monitor: dict[str, Any] | None = None) -> None:
+        if self._dialog is not None and self._dialog.winfo_exists():
+            self._dialog.lift()
+            return
+        self._dialog = MonitorDialog(self.app, monitor=monitor, on_save=self.refresh)
 
     def _add_monitor(self) -> None:
-        MonitorDialog(self.app, on_save=self.refresh)
+        self._open_dialog()
+
+    def _edit_selected(self) -> None:
+        monitor = self._selected()
+        if monitor:
+            self._open_dialog(self.app.db.get_monitor(monitor["id"]))
+
+    def _run_selected(self) -> None:
+        monitor = self._selected()
+        if monitor:
+            self.app.scheduler.run_now(monitor["id"])
+
+    def _toggle_selected(self) -> None:
+        monitor = self._selected()
+        if monitor:
+            self.app.db.set_monitor_enabled(monitor["id"], not monitor["enabled"])
+            self.app.scheduler.sync_jobs()
+            self.refresh()
+
+    def _delete_selected(self) -> None:
+        monitor = self._selected()
+        if monitor and messagebox.askyesno("Delete monitor", f"Delete {monitor['name']}?", parent=self):
+            self.app.db.delete_monitor(monitor["id"])
+            self.app.scheduler.sync_jobs()
+            self.refresh()
 
     def _save_template(self) -> None:
-        path = filedialog.asksaveasfilename(
-            parent=self,
-            title="Save monitor template",
-            initialfile="sitesentry_monitors_template.xlsx",
-            defaultextension=".xlsx",
-            filetypes=[("Excel workbook", "*.xlsx")],
-        )
-        if not path:
-            return
-        try:
-            create_monitor_template(path)
-        except Exception as exc:
-            messagebox.showerror("Template", f"Could not save template:\n{exc}", parent=self)
-            return
-        messagebox.showinfo("Template", f"Template saved:\n{path}", parent=self)
+        path = filedialog.asksaveasfilename(parent=self, title="Monitor template", initialfile="sitesentry_monitors_template.xlsx", defaultextension=".xlsx", filetypes=[("Excel workbook", "*.xlsx")])
+        if path:
+            run_background(self.app, self, lambda: create_monitor_template(path), lambda _: messagebox.showinfo("Template", "Template exported.", parent=self))
 
     def _import_excel(self) -> None:
-        path = filedialog.askopenfilename(
-            parent=self,
-            title="Import monitors from Excel",
-            filetypes=[("Excel workbook", "*.xlsx"), ("All files", "*.*")],
-        )
+        path = filedialog.askopenfilename(parent=self, title="Import monitors", filetypes=[("Excel workbook", "*.xlsx")])
         if not path:
             return
-        self._set_busy(True)
-
-        def worker() -> None:
-            try:
-                result = import_monitors_from_excel(self.app.db, path)
-                self.app.scheduler.sync_jobs()
-            except Exception as exc:
-                self.after(0, lambda: self._finish_import_error(exc))
-                return
-            self.after(0, lambda: self._finish_import(result.summary(), result.ok))
-
-        threading.Thread(target=worker, daemon=True).start()
-
-    def _finish_import(self, summary: str, ok: bool) -> None:
-        self._set_busy(False)
-        self.refresh()
-        self.app._update_status_text()
-        if ok:
-            messagebox.showinfo("Import Excel", summary, parent=self)
-        else:
-            messagebox.showwarning("Import Excel", summary, parent=self)
-
-    def _finish_import_error(self, exc: Exception) -> None:
-        self._set_busy(False)
-        messagebox.showerror("Import Excel", f"Import failed:\n{exc}", parent=self)
-
-    def _set_busy(self, busy: bool) -> None:
-        cursor = "watch" if busy else ""
-        self.configure(cursor=cursor)
-        self.app.configure(cursor=cursor)
-
-    def _edit_monitor(self, monitor: dict[str, Any]) -> None:
-        fresh = self.app.db.get_monitor(int(monitor["id"])) or monitor
-        MonitorDialog(self.app, monitor=fresh, on_save=self.refresh)
-
-    def _toggle_monitor(self, monitor: dict[str, Any]) -> None:
-        self.app.db.set_monitor_enabled(int(monitor["id"]), not bool(monitor.get("enabled")))
-        self.app.scheduler.sync_jobs()
-        self.refresh()
-
-    def _delete_monitor(self, monitor: dict[str, Any]) -> None:
-        if not messagebox.askyesno("Delete monitor", f"Delete {monitor.get('name')}?", parent=self):
-            return
-        self.app.db.delete_monitor(int(monitor["id"]))
-        self.app.scheduler.sync_jobs()
-        self.refresh()
+        def work():
+            result = import_monitors_from_excel(self.app.db, path)
+            self.app.scheduler.sync_jobs()
+            return result
+        def done(result):
+            self.refresh()
+            self.app._update_status_text()
+            (messagebox.showinfo if result.ok else messagebox.showwarning)("Import Excel", result.summary(), parent=self)
+        run_background(self.app, self, work, done)
