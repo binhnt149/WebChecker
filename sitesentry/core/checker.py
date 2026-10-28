@@ -14,6 +14,7 @@ from urllib.parse import urljoin, urlparse
 import httpx
 
 from .database import now_iso
+from .diagnostics import exception_category, result_category
 
 
 WHITESPACE_RE = re.compile(r"\s+")
@@ -30,6 +31,7 @@ class CheckResult:
     attempts: int = 1
     checked_at: str = field(default_factory=now_iso)
     details: dict[str, Any] = field(default_factory=dict)
+    error_type: str = ""
 
     def detail_json(self) -> str:
         try:
@@ -134,8 +136,9 @@ class SiteChecker:
 
         for attempt in range(1, retry_count + 1):
             result = await self._check_once(monitor)
+            result.error_type = result_category(result)
             result.attempts = attempt
-            if result.ok:
+            if result.ok or result.error_type in {"auth_credentials", "configuration_error"}:
                 return result
             last_result = result
             if attempt < retry_count and retry_delay:
@@ -152,9 +155,12 @@ class SiteChecker:
                 return await self._check_api(monitor)
             return await self._check_simple_web(monitor)
         except (httpx.TimeoutException, httpx.NetworkError, httpx.HTTPError, ValueError, KeyError) as exc:
-            return CheckResult(False, "down", error=str(exc))
+            return self._transport_failure(exc, str(exc))
         except Exception as exc:  # Defensive boundary for background jobs.
-            return CheckResult(False, "down", error=f"{type(exc).__name__}: {exc}")
+            return self._transport_failure(exc, f"{type(exc).__name__}: {exc}")
+
+    def _transport_failure(self, exc: Exception, message: str, details: dict[str, Any] | None = None) -> CheckResult:
+        return CheckResult(False, "down", error=message, error_type=exception_category(exc), details={"exception_kind": type(exc).__name__, **(details or {})})
 
     def _timeout(self, monitor: dict[str, Any]) -> httpx.Timeout:
         seconds = max(1.0, float(monitor.get("timeout_seconds") or 10.0))
@@ -201,7 +207,7 @@ class SiteChecker:
             try:
                 login_page_response = await client.get(str(login_url), headers=page_headers)
             except (httpx.HTTPError, httpx.InvalidURL) as exc:
-                return CheckResult(False, "down", error=f"Login page failed: could not open Login URL {login_url}: {exc}", details={"phase": "login", "login_url": str(login_url)})
+                return self._transport_failure(exc, f"Login page failed: could not open Login URL {login_url}: {exc}", {"phase": "login", "login_url": str(login_url)})
             if login_page_response.status_code >= 400:
                 return CheckResult(False, "down", status_code=login_page_response.status_code, error=f"Login page failed: Login URL {login_url} returned HTTP {login_page_response.status_code}", details={"phase": "login", "login_url": str(login_page_response.url)})
             login_page_url = str(login_page_response.url)
@@ -224,7 +230,11 @@ class SiteChecker:
             try:
                 login_response = await client.post(post_url, data=form_data, headers=post_headers)
             except (httpx.HTTPError, httpx.InvalidURL) as exc:
-                return CheckResult(False, "down", error=f"Login failed: could not submit credentials to {post_url}: {exc}", details={"phase": "login", **form_details})
+                return self._transport_failure(exc, f"Login failed: could not submit credentials to {post_url}: {exc}", {"phase": "login", **form_details})
+            rejection = response_preview(login_response.text).casefold()
+            rejection_markers = ("invalid username or password", "incorrect username or password", "invalid credentials", "authentication failed", "sai tên đăng nhập", "sai mật khẩu", "tài khoản hoặc mật khẩu không đúng", "tên đăng nhập hoặc mật khẩu không đúng")
+            if login_response.status_code == 401 or (any(marker in rejection for marker in rejection_markers) and self._select_login_form(login_response.text, str(username_field), str(password_field)) is not None):
+                return CheckResult(False, "down", status_code=login_response.status_code, error="Login rejected: the server rejected the account/password or authentication token.", error_type="auth_credentials", details={"phase": "login", **form_details})
             login_redirect = next(
                 (
                     str(response.headers["location"])
@@ -258,7 +268,7 @@ class SiteChecker:
             try:
                 verify_response = await client.get(str(verify_url), headers=page_headers)
             except (httpx.HTTPError, httpx.InvalidURL) as exc:
-                return CheckResult(False, "down", error=f"Verify failed: could not open Verify URL {verify_url}: {exc}", details={"phase": "verify", "verify_url": str(verify_url), **form_details})
+                return self._transport_failure(exc, f"Verify failed: could not open Verify URL {verify_url}: {exc}", {"phase": "verify", "verify_url": str(verify_url), **form_details})
 
         response_ms = int((time.perf_counter() - start) * 1000)
         result = self._assert_response(monitor, verify_response, response_ms)
@@ -286,6 +296,7 @@ class SiteChecker:
                 response_ms=response_ms,
                 status_code=verify_response.status_code,
                 error=f"Login failed: Verify URL {verify_url} still shows the login page. Check the credentials or set Verify text to confirm a successful login.",
+                error_type="auth_verification",
                 details={
                     **self._response_details(verify_response, phase="verify"),
                     "login_post_redirect": login_redirect,
@@ -304,6 +315,7 @@ class SiteChecker:
                 response_ms=response_ms,
                 status_code=verify_response.status_code,
                 error="Verify failed: " + self._missing_text_error("Verify text was not found", verify_response, str(verify_text)),
+                error_type="auth_verification" if self._is_login_page(verify_response.url, str(login_url), login_page_url) else "assertion_failed",
                 details={
                     **self._response_details(verify_response, missing_text=str(verify_text), phase="verify"),
                     "login_post_redirect": login_redirect,
@@ -413,6 +425,7 @@ class SiteChecker:
                     response_ms=response_ms,
                     status_code=response.status_code,
                     error=f"JSON assertion path failed: {exc}",
+                    error_type="assertion_failed",
                 )
             expected = monitor.get("expected_json_value") or ""
             if expected and str(actual) != expected:
@@ -422,6 +435,7 @@ class SiteChecker:
                     response_ms=response_ms,
                     status_code=response.status_code,
                     error=f"JSON assertion failed at {path}: expected {expected!r}, got {actual!r}",
+                    error_type="assertion_failed",
                     details={"json_path": path, "actual": actual},
                 )
             result.details["json_path"] = path
@@ -437,6 +451,7 @@ class SiteChecker:
                 response_ms=response_ms,
                 status_code=response.status_code,
                 error=f"Expected HTTP {expected_status}, got {response.status_code}",
+                error_type="auth_credentials" if response.status_code == 401 else "http_error",
             )
 
         expected_text = str(monitor.get("expected_text") or "")
@@ -447,6 +462,7 @@ class SiteChecker:
                 response_ms=response_ms,
                 status_code=response.status_code,
                 error=self._missing_text_error("Expected text was not found in the response", response, expected_text),
+                error_type="assertion_failed",
                 details=self._response_details(response, missing_text=expected_text),
             )
 

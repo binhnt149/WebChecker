@@ -27,6 +27,8 @@ class DatabaseCase(unittest.TestCase):
         self.root = Path(self.temp.name)
         self.security = SecurityManager(self.root / "key")
         self.db = Database(self.root / "test.db", self.security)
+        rule = self.db.list_email_rules()[0]
+        self.db.save_email_rule({**rule, "batch_window_seconds": 0})
         self.db.set_setting("smtp_enabled", "1")
         self.db.set_setting("smtp_host", "smtp.example.test")
         self.db.set_setting("smtp_to", "first@example.test; second@example.test")

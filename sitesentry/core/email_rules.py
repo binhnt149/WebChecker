@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import re
+import json
 import string
 from email.utils import getaddresses
 from typing import Any
+from .diagnostics import decoded_exclusions
 
 
 RULE_TYPES = {
@@ -14,7 +16,7 @@ RULE_TYPES = {
 WEEKDAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
 TEMPLATE_FIELDS = {
     "monitor_name", "url", "status", "checked_at", "error", "date",
-    "total", "up", "down", "unknown", "down_count", "downtime",
+    "total", "up", "down", "unknown", "down_count", "downtime", "error_type", "monitor_count",
 }
 
 
@@ -68,6 +70,10 @@ def normalize_rule(data: dict[str, Any]) -> dict[str, Any]:
     if "\n" in subject or "\r" in subject:
         raise ValueError("Subject must be a single line")
     body = str(data.get("body_template") or "")
+    exclusions = decoded_exclusions(data)
+    window = int(data.get("batch_window_seconds", 15))
+    if not 0 <= window <= 300:
+        raise ValueError("Grouping window must be between 0 and 300 seconds")
     if not data.get("include_details", True) and not body.strip():
         raise ValueError("Message is required when the default HTML report is disabled")
     validate_template(subject)
@@ -78,4 +84,6 @@ def normalize_rule(data: dict[str, Any]) -> dict[str, Any]:
         "weekdays": ",".join(day for day in WEEKDAYS if day in days),
         "report_period": period, "subject_template": subject, "body_template": body,
         "include_details": int(bool(data.get("include_details", True))),
+        "excluded_error_types_json": json.dumps(sorted(exclusions)),
+        "batch_window_seconds": window,
     }

@@ -15,6 +15,7 @@ from .checker import CheckResult
 from .database import Database
 from .email_rules import parse_recipients, render_template
 from .reports import format_duration
+from .diagnostics import error_label
 
 
 class EmailNotifier:
@@ -42,7 +43,7 @@ class EmailNotifier:
 
     def _delivery_worker(self) -> None:
         while not self._stop.is_set():
-            self._wake.wait(30)
+            self._wake.wait(1)
             self._wake.clear()
             if not self._stop.is_set():
                 try:
@@ -50,12 +51,12 @@ class EmailNotifier:
                 except Exception:
                     logging.getLogger(__name__).exception("Email queue processing failed")
 
-    def process_pending(self) -> None:
+    def process_pending(self, now: datetime | None = None) -> None:
         if self.settings().get("smtp_enabled") != "1" or not self._dispatch_lock.acquire(blocking=False):
             return
         try:
             while not self._stop.is_set():
-                pending = self.db.pending_email_deliveries()
+                pending = self.db.pending_email_deliveries(now=now)
                 if not pending:
                     break
                 any_sent = False
@@ -82,6 +83,10 @@ class EmailNotifier:
             self._dispatch_lock.release()
 
     def _rule_message(self, delivery: dict[str, Any]) -> tuple[str, str]:
+        if delivery.get("batch_id"):
+            members = self.db.email_batch_members(delivery["batch_id"])
+            if len(members) > 1:
+                return self._batch_message(delivery, members)
         payload = json.loads(delivery["payload_json"])
         if delivery["kind"] == "daily_summary":
             report = payload["report"]
@@ -93,6 +98,7 @@ class EmailNotifier:
             values = {
                 "monitor_name": monitor["name"], "url": monitor["url"], "status": "UP" if result.ok else "DOWN",
                 "checked_at": result.checked_at, "error": result.error, "date": result.checked_at[:10],
+                "error_type": error_label(result.error_type), "monitor_count": 1,
             }
             default_body = self._monitor_html(delivery["kind"], monitor, result)
         subject = render_template(delivery["subject_template"], values).replace("\r", " ").replace("\n", " ")
@@ -103,6 +109,32 @@ class EmailNotifier:
         else:
             body = f"<html><body>{fragment}</body></html>"
         return subject, body
+
+    def _batch_message(self, rule: dict[str, Any], members: list[dict[str, Any]]) -> tuple[str, str]:
+        payloads = [json.loads(member["payload_json"]) for member in members]
+        first = payloads[0]["result"]
+        values = {
+            "monitor_name": f"{len(payloads)} monitors", "monitor_count": len(payloads), "status": "DOWN",
+            "date": first["checked_at"][:10], "checked_at": first["checked_at"],
+            "error_type": ", ".join(sorted({error_label(payload["result"].get("error_type", "unknown")) for payload in payloads})),
+        }
+        subject = render_template(rule["subject_template"], values).replace("\r", " ").replace("\n", " ")
+        rows = []
+        for payload in payloads:
+            monitor, result = payload["monitor"], payload["result"]
+            custom_values = {**values, **result, "status": "DOWN", "monitor_name": monitor["name"], "url": monitor["url"], "error_type": error_label(result.get("error_type", "unknown"))}
+            custom = render_template(rule["body_template"], custom_values)
+            cells = [monitor["name"], monitor["monitor_type"], monitor["url"], error_label(result.get("error_type", "unknown")), result["checked_at"], result["error"]]
+            if custom:
+                cells.append(custom)
+            rows.append("<tr>" + "".join(f'<td style="padding:10px;border-bottom:1px solid #d8e0e5;vertical-align:top">{html.escape(str(value)).replace(chr(10), "<br>")}</td>' for value in cells) + "</tr>")
+        headings = ["Monitor", "Type", "URL", "Error category", "Checked at", "Error"]
+        if rule["body_template"]:
+            headings.append("Message")
+        table = '<table style="border-collapse:collapse;width:100%"><tr>' + "".join(f'<th style="text-align:left;padding:10px;background:#ecfdf5">{heading}</th>' for heading in headings) + "</tr>" + "".join(rows) + "</table>"
+        if not rule["include_details"]:
+            table = "".join(f"<h3>{html.escape(payload['monitor']['name'])}</h3><p>{html.escape(render_template(rule['body_template'], {**values, **payload['result'], 'monitor_name': payload['monitor']['name'], 'url': payload['monitor']['url']}))}</p>" for payload in payloads)
+        return subject, f'<html><body style="font-family:Arial,sans-serif;color:#18252c;padding:24px"><h2>SiteSentry: {len(payloads)} monitors DOWN</h2>{table}</body></html>'
 
     def _summary_html(self, report: dict[str, Any]) -> str:
         rows = "".join(
@@ -238,6 +270,7 @@ class EmailNotifier:
             "Attempts": result.attempts,
             "Checked At": result.checked_at,
             "Error": result.error or "-",
+            "Error category": error_label(result.error_type),
         }
         table = "".join(
             f"<tr><th>{html.escape(str(key))}</th><td>{html.escape(str(value))}</td></tr>"
