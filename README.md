@@ -370,18 +370,18 @@ Repo có GitHub Actions workflow tại `.github/workflows/build.yml`, chạy ki�
 3. Tạo và push tag trùng phiên bản, ví dụ với phiên bản hiện tại:
 
 ```bash
-git tag -a v1.1.0 -m "Release SiteSentry Desktop 1.1.0"
-git push origin v1.1.0
+git tag -a v1.2.0 -m "Release SiteSentry Desktop 1.2.0"
+git push origin v1.2.0
 ```
 
 Workflow dùng Python 3.12 trên cả ba runner (Python 3.10 chưa có runner macOS arm64 tương ứng trong manifest của setup-python). Workflow kiểm tra tag phải khớp `__version__`, chạy test trên từng nền tảng rồi build bằng PyInstaller. Chỉ khi cả ba nền tảng thành công, job `Publish GitHub Release` mới gom đủ bốn file, tạo `SHA256SUMS.txt`, tải lên bản nháp và công bố Release. Job phát hành dùng `GITHUB_TOKEN` với quyền `contents: write`, không cần thêm PAT vào source code.
 
-Các file của phiên bản `1.1.0`:
+Các file của phiên bản `1.2.0`:
 
-- `SiteSentry-Desktop-v1.1.0-Windows-x64.exe`
-- `SiteSentry-Desktop-v1.1.0-Windows-x64.zip`
-- `SiteSentry-Desktop-v1.1.0-macOS-x64.dmg`
-- `SiteSentry-Desktop-v1.1.0-macOS-arm64.dmg`
+- `SiteSentry-Desktop-v1.2.0-Windows-x64.exe`
+- `SiteSentry-Desktop-v1.2.0-Windows-x64.zip`
+- `SiteSentry-Desktop-v1.2.0-macOS-x64.dmg`
+- `SiteSentry-Desktop-v1.2.0-macOS-arm64.dmg`
 - `SHA256SUMS.txt`
 
 Tải tại [GitHub Releases](https://github.com/binhnt149/WebChecker/releases); theo dõi kết quả/log tại [GitHub Actions](https://github.com/binhnt149/WebChecker/actions). Nếu build lỗi, Release không được công bố; sửa lỗi bằng commit mới và phát hành phiên bản/tag mới, không ghi đè tag đã phát hành. Có thể chạy lại job khi lỗi tạm thời (mạng/runner).
