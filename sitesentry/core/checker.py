@@ -14,7 +14,7 @@ from urllib.parse import urljoin, urlparse
 import httpx
 
 from .database import now_iso
-from .diagnostics import exception_category, result_category
+from .diagnostics import exception_category, has_login_rejection, result_category
 
 
 WHITESPACE_RE = re.compile(r"\s+")
@@ -231,9 +231,9 @@ class SiteChecker:
                 login_response = await client.post(post_url, data=form_data, headers=post_headers)
             except (httpx.HTTPError, httpx.InvalidURL) as exc:
                 return self._transport_failure(exc, f"Login failed: could not submit credentials to {post_url}: {exc}", {"phase": "login", **form_details})
-            rejection = response_preview(login_response.text).casefold()
-            rejection_markers = ("invalid username or password", "incorrect username or password", "invalid credentials", "authentication failed", "sai tên đăng nhập", "sai mật khẩu", "tài khoản hoặc mật khẩu không đúng", "tên đăng nhập hoặc mật khẩu không đúng")
-            if login_response.status_code == 401 or (any(marker in rejection for marker in rejection_markers) and self._select_login_form(login_response.text, str(username_field), str(password_field)) is not None):
+            credential_fields = {str(username_field), str(password_field)}
+            still_has_login_form = any(credential_fields.issubset({item.get("name") for item in form.get("inputs", [])}) for form in parse_login_forms(login_response.text))
+            if login_response.status_code == 401 or (200 <= login_response.status_code < 300 and has_login_rejection(login_response.text) and still_has_login_form):
                 return CheckResult(False, "down", status_code=login_response.status_code, error="Login rejected: the server rejected the account/password or authentication token.", error_type="auth_credentials", details={"phase": "login", **form_details})
             login_redirect = next(
                 (
@@ -273,6 +273,8 @@ class SiteChecker:
         response_ms = int((time.perf_counter() - start) * 1000)
         result = self._assert_response(monitor, verify_response, response_ms)
         if not result.ok:
+            if result.error_type == "assertion_failed" and self._is_login_page(verify_response.url, str(login_url), login_page_url):
+                result.error_type = "auth_verification"
             result.error = f"Verify failed: Verify URL {verify_url} returned HTTP {result.status_code}. {result.error}"
             result.details.update(
                 {

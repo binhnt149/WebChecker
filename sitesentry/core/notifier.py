@@ -14,8 +14,8 @@ from typing import Any
 from .checker import CheckResult
 from .database import Database
 from .email_rules import parse_recipients, render_template
-from .reports import format_duration
-from .diagnostics import error_label
+from .reports import filter_email_summary, format_duration
+from .diagnostics import decoded_exclusions, error_label
 
 
 class EmailNotifier:
@@ -64,7 +64,8 @@ class EmailNotifier:
                     if self._stop.is_set():
                         break
                     delivery_id = int(delivery["delivery_id"])
-                    self.db.mark_delivery_attempt(delivery_id)
+                    if not self.db.mark_delivery_attempt(delivery_id):
+                        continue
                     try:
                         subject, body = self._rule_message(delivery)
                         remaining = delivery["remaining_recipients_json"]
@@ -89,7 +90,7 @@ class EmailNotifier:
                 return self._batch_message(delivery, members)
         payload = json.loads(delivery["payload_json"])
         if delivery["kind"] == "daily_summary":
-            report = payload["report"]
+            report = filter_email_summary(payload["report"], decoded_exclusions(delivery))
             values = {**report, "date": report["start_at"][:10], "status": "SUMMARY", "downtime": format_duration(report["downtime_seconds"])}
             default_body = self._summary_html(report)
         else:
@@ -148,6 +149,7 @@ class EmailNotifier:
         <h2>SiteSentry daily dashboard: {html.escape(report['start_at'][:10])}</h2>
         <p>Total: {report['total']} | UP: {report['up']} | DOWN: {report['down']} | Unknown: {report['unknown']}</p>
         <p>From {html.escape(report['start_at'])} to {html.escape(report['as_of'])}</p>
+        <p>Currently DOWN monitors excluded by this rule: {report.get('excluded_monitor_count', 0)}</p>
         <table style="border-collapse:collapse;width:100%"><thead><tr>
         <th>Monitor</th><th>Status</th><th>DOWN checks</th><th>Incidents</th><th>Total DOWN</th><th>Average DOWN</th>
         </tr></thead><tbody>{rows}</tbody></table></body></html>'''

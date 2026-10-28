@@ -1,11 +1,60 @@
 from __future__ import annotations
 
 import errno
+from html.parser import HTMLParser
 import socket
 import ssl
 from typing import Any
 
 import httpx
+
+
+class _VisibleText(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.stack: list[tuple[str, bool]] = []
+        self.lines: list[str] = []
+        self.parts: list[str] = []
+
+    def _flush(self) -> None:
+        text = " ".join("".join(self.parts).split()).casefold().rstrip(".! ")
+        if text:
+            self.lines.append(text)
+        self.parts.clear()
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag in {"p", "div", "li", "form", "section", "article", "table", "tr", "td", "h1", "h2", "h3", "h4", "br", "hr"}:
+            self._flush()
+        if tag in {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"}:
+            return
+        attributes = dict(attrs)
+        style = str(attributes.get("style") or "").replace(" ", "").casefold()
+        hidden = (bool(self.stack and self.stack[-1][1]) or tag in {"script", "style", "template", "noscript"} or "hidden" in attributes or attributes.get("aria-hidden") == "true" or "display:none" in style or "visibility:hidden" in style)
+        self.stack.append((tag, hidden))
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag in {"p", "div", "li", "form", "section", "article", "table", "tr", "td", "h1", "h2", "h3", "h4"}:
+            self._flush()
+        for index in range(len(self.stack) - 1, -1, -1):
+            if self.stack[index][0] == tag:
+                del self.stack[index:]
+                break
+
+    def handle_data(self, data: str) -> None:
+        if not self.stack or not self.stack[-1][1]:
+            self.parts.append(data)
+
+    def close(self) -> None:
+        super().close()
+        self._flush()
+
+
+def has_login_rejection(response_text: str) -> bool:
+    parser = _VisibleText()
+    parser.feed(response_text)
+    parser.close()
+    markers = {"invalid username or password", "incorrect username or password", "invalid credentials", "authentication failed", "sai tên đăng nhập", "sai mật khẩu", "tài khoản hoặc mật khẩu không đúng", "tên đăng nhập hoặc mật khẩu không đúng"}
+    return any(" ".join(line.split()) in markers for line in parser.lines)
 
 
 ERROR_TYPES = {

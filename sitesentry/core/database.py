@@ -1,16 +1,13 @@
 from __future__ import annotations
 
-import json
 import sqlite3
 import threading
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from .email_rules import normalize_rule
 from .security import SecurityManager
 from .notification_store import NotificationStore
-from .diagnostics import result_category
 
 
 SECRET_MONITOR_FIELDS = {
