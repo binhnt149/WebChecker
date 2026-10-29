@@ -114,7 +114,7 @@ class EmailTests(DatabaseCase):
 
     def test_summary_contains_daily_dashboard_and_custom_values(self) -> None:
         rule_id = self.db.save_email_rule({"name": "Daily", "rule_type": "daily_summary", "weekdays": "mon", "body_template": "{date}: {total} / {down_count} / {downtime}"})
-        self.log("2026-10-20T01:00:00", "down")
+        self.db.add_log(self.monitor_id, "Portal", "down", False, 123, 200, checked_at="2026-10-20T01:00:00", error_type="timeout")
         report = build_report(self.db, datetime(2026, 10, 20), datetime(2026, 10, 20, 2))
         self.db.queue_summary(rule_id, "qa", report)
         subject, body = EmailNotifier(self.db)._rule_message(self.db.pending_email_deliveries()[0])

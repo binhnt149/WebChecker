@@ -48,7 +48,7 @@ Kết quả mới có mã `error_type`, được lưu riêng trong Log và `last
 | `auth_verification` | Trang xác minh vẫn là trang login hoặc không xác minh được session; có thể liên quan CAPTCHA, MFA, CSRF hay cấu hình form. Không tự coi là sai mật khẩu. |
 | `timeout` | Website/API không phản hồi trong thời gian chờ. |
 | `target_unreachable` | Không kết nối được server hoặc kết nối bị ngắt. |
-| `network_offline` | Hệ điều hành báo mạng không khả dụng/không có route, hoặc không chọn được route IPv4 lẫn IPv6 trên máy giám sát. |
+| `network_offline` | Hệ điều hành cung cấp bằng chứng mạng cục bộ không khả dụng; lỗi route tới một đích riêng không đủ để kết luận toàn máy mất mạng. |
 | `dns_error` | Không phân giải được tên miền/địa chỉ. |
 | `tls_error` | Chứng chỉ TLS/SSL hoặc bắt tay TLS lỗi. |
 | `http_error` | HTTP status khác giá trị mong đợi; HTTP 403 không bị gán nhầm thành sai mật khẩu. |
@@ -56,7 +56,25 @@ Kết quả mới có mã `error_type`, được lưu riêng trong Log và `last
 | `configuration_error` | URL, JSON header/form hoặc cấu hình monitor không hợp lệ. |
 | `unknown` | Chưa có đủ thông tin để phân loại. |
 
-Kiểm tra route chỉ hỏi hệ điều hành, không gửi thông tin đăng nhập hay gọi website thứ ba để dò Internet. Nhiều monitor DOWN đồng thời không đủ để kết luận máy mất mạng. Nếu LAN vẫn có route nhưng mất đường ra Internet, lỗi có thể vẫn được ghi là timeout/kết nối/DNS; app không khẳng định offline khi chưa có bằng chứng. Với lỗi xác thực rõ ràng hoặc cấu hình sai, app không lặp lại cùng yêu cầu theo retry guard để giảm nguy cơ khóa tài khoản.
+Nhiều monitor DOWN đồng thời không đủ để kết luận máy mất mạng. Nếu LAN vẫn có route nhưng mất đường ra Internet, lỗi có thể vẫn được ghi là timeout/kết nối/DNS; app không khẳng định offline khi chưa có bằng chứng. Với lỗi xác thực rõ ràng hoặc cấu hình sai, app không lặp lại cùng yêu cầu theo retry guard để giảm nguy cơ khóa tài khoản.
+
+### Cấu hình chẩn đoán cho từng monitor
+
+Trong cửa sổ thêm/sửa Web, Auth Web hoặc API, chọn **Network & diagnostic rules**. Tại đây có thể chọn profile mạng và thêm, sửa, bật/tắt hoặc xóa quy tắc; Test Run dùng cùng bộ phân loại với kiểm tra định kỳ, nhưng không ghi log hay gửi cảnh báo.
+
+- **Network profile:** tạo profile Internet, nội bộ/VPN hoặc tùy chỉnh, với tối đa hai URL tham chiếu, phương thức HEAD/GET và timeout. Chỉ dùng địa chỉ do người vận hành cấu hình; probe không gửi credential monitor, không theo redirect và không chứng minh các đích khác hoạt động. Không cấu hình profile thì không phát sinh probe bổ sung. Kết quả được cache tối đa 60 giây.
+- **Diagnostic rules:** khai báo ID, ưu tiên, giai đoạn (`response`, `assertion`, `login_page`, `login_submit`, `verify`), nhóm lỗi, mã lý do và điều kiện JSON. Có thể so sánh HTTP status, text hiển thị hoặc giá trị JSON đúng kiểu; tối đa 20 quy tắc. Ví dụ API trả `{"success": false}` chỉ được coi là lỗi nghiệp vụ khi có assertion hoặc quy tắc phù hợp.
+- Kết quả có `confirmed` khi đã xác định nhóm theo bằng chứng, `undetermined` khi chưa đủ bằng chứng và `not_applicable` khi UP. Nhóm HTTP, timeout hay kết nối mô tả hiện tượng quan sát được, không tự kết luận nguyên nhân gốc. Nếu quy tắc cùng ưu tiên mâu thuẫn, kết quả được giữ là chưa xác định.
+
+Quy tắc ví dụ cho API:
+
+```json
+[{"id":"api-failure","enabled":true,"priority":100,"phase":"response",
+  "conditions":[{"source":"json","path":"success","operator":"equals","value":false}],
+  "result":{"error_type":"assertion_failed","reason_code":"business_rule_match"}}]
+```
+
+Thông tin so khớp, token và mật khẩu có thể nhạy cảm. Quy tắc và các trường bí mật được mã hóa trong DB; dữ liệu được che trước khi ghi log, tạo email và xuất báo cáo. Xem hợp đồng đầy đủ và các giới hạn tại [checker-spec.md](checker-spec.md).
 
 ### Lọc và gom email sự cố
 
@@ -69,6 +87,8 @@ Trong `Settings > Email schedules > Edit/Add schedule`:
 - Với quy tắc DOWN/recovery, sự cố bị loại không tạo email UP đơn lẻ. Nếu DOWN đã được đưa vào hàng đợi hợp lệ, UP được giữ sau DOWN để người nhận đối chiếu.
 - Đổi bộ lọc sẽ loại các thư tương ứng còn chờ và chưa bắt đầu gửi. Các lần gửi đã bắt đầu, hoặc đã được SMTP chấp nhận một phần, không thể thu hồi; app tiếp tục theo dõi người nhận còn thiếu để không gửi trùng.
 - Trạng thái hàng đợi `suppressed` nghĩa là bị bộ lọc loại, không phải lỗi SMTP.
+- DOWN chưa xác định nhóm vẫn được ghi log và kiểm tra lại, nhưng không tạo email DOWN hoặc UP mồ côi; khi đang DOWN chưa phân loại, monitor cũng bị loại khỏi email tổng hợp. Khi đã có bằng chứng xác định nhóm, app mới xét bộ lọc và lịch gửi.
+- `held` là sự kiện cũ chưa đủ bằng chứng. `delivery_uncertain` nghĩa là không chắc SMTP đã nhận thư; app không tự gửi lại để tránh trùng. Trong Settings, mở hàng đợi và chủ động Retry nếu chấp nhận nguy cơ thư trùng.
 
 Thư tạo mới ghi nhận loại quy tắc tại thời điểm tạo. Thư từ bản cũ không có thông tin này được giữ là `legacy_unknown`, không suy đoán từ loại quy tắc hiện tại; nếu người dùng loại nhóm lỗi tương ứng thì thư cũ chưa bắt đầu gửi cũng được loại theo lựa chọn đó. Nâng cấp có thể tiếp tục an toàn sau khi bị ngắt giữa chừng, không cần xóa DB hoặc Fernet key.
 
@@ -81,6 +101,10 @@ Các biến `{error_type}` và `{monitor_count}` có thể dùng trong nội dun
 Màn hình `Statistics` có KPI và ba tab `Monitors`, `Incidents`, `Error categories`. File Excel có ba sheet tương ứng `Statistics`, `Incidents`, `Error breakdown`. Phần chi tiết ghi cả các nhóm lỗi gặp trong mỗi đợt DOWN; bảng phân loại đếm số log DOWN theo từng monitor/nhóm lỗi, kể cả lỗi đã loại khỏi email.
 
 Nút `Template` xuất biểu mẫu báo cáo trống. Bản mẫu có sẵn tại `templates/sitesentry_report_template.xlsx`; đây là biểu mẫu báo cáo, không phải file để import monitor. File xuất dùng ngày giờ Excel thật, thời lượng `[h]:mm:ss`, vùng lọc, dòng tổng tính theo các dòng đang lọc và thiết lập in ngang. Các tên/nội dung từ monitor được ghi như văn bản, không thực thi thành công thức Excel.
+
+Mẫu import `templates/sitesentry_monitors_template.xlsx` có thêm `network_profile` và `diagnostic_rules_json`. Tạo profile trong app trước khi import. File cũ không có hai cột vẫn dùng được và giữ cấu hình chẩn đoán hiện có; khi cập nhật bằng file mới, ô trống giữ giá trị cũ, `[]` xóa quy tắc và `__CLEAR__` xóa profile. Các dòng ví dụ mặc định bị tắt. File Excel người dùng tự điền có thể chứa mật khẩu/token và không tự được mã hóa: cần bảo vệ và xóa bản sao theo quy trình của đơn vị.
+
+Trước khi nâng cấp, sao lưu **cả DB SQLite và Fernet key**. Muốn quay về v1.2.0, khôi phục cả hai từ bản sao lưu trước nâng cấp; không giả định bản cũ đọc được dữ liệu sau migration.
 
 ## Công nghệ sử dụng
 
@@ -220,9 +244,9 @@ Nếu lần kiểm tra đầu tiên lỗi, checker sẽ thử lại đến khi t
 Sau khi có kết quả:
 
 1. Scheduler ghi log, cập nhật trạng thái và tạo sự kiện email trong cùng một transaction SQLite.
-2. Với quy tắc `DOWN and recovery`, lần đầu `unknown/up -> down` tạo một cảnh báo. Các lần `down -> down` tiếp theo không tạo thêm email, kể cả sau khi khởi động lại app.
-3. Khi `down -> up`, app tạo một email phục hồi. `up -> up` không gửi email. Một đợt DOWN mới vẫn được cảnh báo ngay, không bị chặn bởi cooldown của đợt trước.
-4. Worker riêng xử lý hàng đợi SMTP, không chặn scheduler hoặc giao diện. Khi gửi lỗi, chờ ít nhất một phút rồi thử lại; mỗi quy tắc giữ thứ tự DOWN trước UP. Hàng đợi tồn tại sau khi khởi động lại.
+2. Với quy tắc `DOWN and recovery`, lần đầu DOWN có nhóm đã xác định và được phép sẽ tạo một cảnh báo. Các lần DOWN liền kề cùng sự cố không tạo thêm email, kể cả sau khi khởi động lại app.
+3. Khi phục hồi, app chỉ tạo email theo lịch nếu sự cố đã được phân loại và đủ điều kiện tương ứng. `up -> up` không gửi email. Một đợt DOWN mới vẫn được cảnh báo ngay, không bị chặn bởi cooldown của đợt trước.
+4. Worker riêng xử lý hàng đợi SMTP, không chặn scheduler hoặc giao diện. Khi gửi lỗi đã xác định chưa được SMTP chấp nhận, app chờ ít nhất một phút rồi thử lại; nếu không chắc SMTP đã nhận, app giữ `delivery_uncertain` để xử lý thủ công. Mỗi quy tắc giữ thứ tự DOWN trước UP.
 5. Khi SMTP bị tắt, app vẫn ghi log nhưng không tạo email cảnh báo/tổng hợp mới. Quy tắc bị tắt tạm dừng hàng đợi của chính nó; xóa quy tắc sẽ xóa hàng đợi tương ứng.
 
 `cooldown_minutes` cũ được giữ trong DB/file import để tương thích, nhưng không áp dụng cho cơ chế cảnh báo theo chuyển trạng thái mới.
@@ -240,6 +264,7 @@ Các trường nhạy cảm được mã hóa trước khi lưu:
 - `api_token`
 - `auth_password`
 - `auth_extra_fields`
+- `diagnostic_rules_json`
 - `smtp_password`
 
 Khi app đọc monitor/settings từ database, các trường này được giải mã để hiển thị hoặc dùng khi kiểm tra. Nếu Fernet key bị mất hoặc thay đổi, dữ liệu đã mã hóa cũ sẽ không giải mã được.
@@ -323,7 +348,7 @@ App lấy trạng thái cuối trước `From` để nhận biết sự cố ké
 
 File Excel có ba sheet `Statistics`, `Incidents` và `Error breakdown` để đối chiếu tổng hợp, từng khoảng DOWN và nhóm lỗi. Ngày giờ là giá trị Excel thật; thời lượng là số với định dạng `[h]:mm:ss`, hỗ trợ tổng vượt 24 giờ và có thể cộng/tính tiếp trong Excel.
 
-Hai cột metadata `language` và `web_server` nằm cuối file mẫu import (AC/AD), áp dụng cho cả ba loại monitor. File mẫu cũ thiếu hai cột này vẫn import được và không xóa metadata đã khai báo. Nếu file có cột nhưng giá trị trống thì metadata được xóa theo dữ liệu nhập.
+Hai cột metadata `language` và `web_server` nằm tại AC/AD trong file mẫu import, áp dụng cho cả ba loại monitor. File mẫu cũ thiếu hai cột này vẫn import được và không xóa metadata đã khai báo. Nếu file có cột nhưng giá trị trống thì metadata được xóa theo dữ liệu nhập.
 
 ## Kiểm thử các chức năng mới
 

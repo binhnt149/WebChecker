@@ -8,13 +8,16 @@ import time
 import unicodedata
 from dataclasses import dataclass, field
 from html.parser import HTMLParser
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import urljoin, urlparse
 
 import httpx
 
 from .database import now_iso
+from .diagnostic_rules import extract_json_path, match_rules, validate_rules
 from .diagnostics import exception_category, has_login_rejection, result_category
+from .network_diagnostics import NetworkDiagnostics, validate_profile
+from .privacy import sanitize_result
 
 
 WHITESPACE_RE = re.compile(r"\s+")
@@ -32,6 +35,11 @@ class CheckResult:
     checked_at: str = field(default_factory=now_iso)
     details: dict[str, Any] = field(default_factory=dict)
     error_type: str = ""
+    classification_state: str = ""
+    reason_code: str = ""
+    phase: str = ""
+    evidence_source: str = ""
+    evidence: dict[str, Any] = field(default_factory=dict)
 
     def detail_json(self) -> str:
         try:
@@ -78,25 +86,6 @@ def headers_from_json(raw: str | None) -> dict[str, str]:
     return {str(key): str(value) for key, value in parsed.items()}
 
 
-def extract_json_path(payload: Any, path: str) -> Any:
-    current = payload
-    for part in [piece for piece in path.strip().split(".") if piece]:
-        name = part
-        index: int | None = None
-        if part.endswith("]") and "[" in part:
-            name, index_part = part[:-1].split("[", 1)
-            index = int(index_part)
-        if name:
-            if not isinstance(current, dict) or name not in current:
-                raise KeyError(path)
-            current = current[name]
-        if index is not None:
-            if not isinstance(current, list):
-                raise KeyError(path)
-            current = current[index]
-    return current
-
-
 def normalize_assertion_text(value: str) -> str:
     normalized = unicodedata.normalize("NFC", value).replace("\xa0", " ")
     return WHITESPACE_RE.sub(" ", normalized).strip()
@@ -126,29 +115,66 @@ def parse_login_forms(response_text: str) -> list[dict[str, Any]]:
 
 
 class SiteChecker:
-    def __init__(self, user_agent: str = "SiteSentry Desktop/1.0") -> None:
+    def __init__(self, user_agent: str = "SiteSentry Desktop/1.0", profile_resolver: Callable[[str], dict[str, Any] | None] | None = None, network_diagnostics: NetworkDiagnostics | None = None) -> None:
         self.user_agent = user_agent
+        self.profile_resolver = profile_resolver
+        self.network_diagnostics = network_diagnostics or NetworkDiagnostics()
 
     async def check_monitor(self, monitor: dict[str, Any]) -> CheckResult:
-        retry_count = max(1, int(monitor.get("retry_count") or 1))
-        retry_delay = max(0.0, float(monitor.get("retry_delay_seconds") or 0.0))
+        try:
+            retry_count = max(1, int(monitor.get("retry_count") or 1))
+            retry_delay = max(0.0, float(monitor.get("retry_delay_seconds") or 0.0))
+        except (ValueError, TypeError):
+            return CheckResult(False, "down", error="Invalid retry configuration", error_type="configuration_error", classification_state="confirmed", reason_code="invalid_retry", phase="configuration", evidence_source="configuration", evidence={"field": "retry"})
         last_result: CheckResult | None = None
 
         for attempt in range(1, retry_count + 1):
             result = await self._check_once(monitor)
             result.error_type = result_category(result)
+            result.classification_state = "not_applicable" if result.ok else ("undetermined" if result.error_type == "unknown" else "confirmed")
+            result.phase = result.phase or result.details.get("phase", "response")
+            if not result.ok and not result.reason_code:
+                if result.status_code is not None and result.error_type == "http_error":
+                    result.reason_code = f"http_{result.status_code}"
+                elif result.error_type == "auth_credentials":
+                    result.reason_code = "auth_rejected"
+                elif result.error_type == "auth_verification":
+                    result.reason_code = "session_unverified"
+            if not result.evidence_source and not result.ok:
+                result.evidence_source = "assertion" if result.error_type == "assertion_failed" else ("http" if result.status_code is not None else "transport")
+            if not result.evidence and not result.ok:
+                result.evidence = {key: value for key, value in {"status_code": result.status_code, "exception_kind": result.details.get("exception_kind")}.items() if value is not None}
             result.attempts = attempt
             if result.ok or result.error_type in {"auth_credentials", "configuration_error"}:
-                return result
+                return await self._finalize(monitor, result)
             last_result = result
             if attempt < retry_count and retry_delay:
                 await asyncio.sleep(retry_delay)
 
-        return last_result or CheckResult(False, "down", error="No check attempts were executed")
+        return await self._finalize(monitor, last_result or CheckResult(False, "down", error="No check attempts were executed", error_type="unknown", classification_state="undetermined"))
+
+    async def _finalize(self, monitor: dict[str, Any], result: CheckResult) -> CheckResult:
+        profile_name = str(monitor.get("network_profile") or "")
+        if not result.ok and result.error_type in {"timeout", "dns_error", "target_unreachable"} and profile_name and self.profile_resolver:
+            profile = self.profile_resolver(profile_name)
+            if profile:
+                try:
+                    result.evidence["network_probe"] = await self.network_diagnostics.probe(profile)
+                except (ValueError, httpx.HTTPError) as exc:
+                    result.evidence["network_probe"] = {"profile": profile_name, "exception_kind": type(exc).__name__}
+        sanitize_result(result, monitor)
+        return result
 
     async def _check_once(self, monitor: dict[str, Any]) -> CheckResult:
         monitor_type = monitor.get("monitor_type") or "simple_web"
         try:
+            validate_rules(monitor.get("diagnostic_rules_json"))
+            profile_name = str(monitor.get("network_profile") or "")
+            if profile_name:
+                profile = self.profile_resolver(profile_name) if self.profile_resolver else None
+                if profile is None:
+                    raise ValueError("Network profile does not exist")
+                validate_profile(profile)
             if monitor_type == "auth_web":
                 return await self._check_auth_web(monitor)
             if monitor_type == "api":
@@ -160,7 +186,22 @@ class SiteChecker:
             return self._transport_failure(exc, f"{type(exc).__name__}: {exc}")
 
     def _transport_failure(self, exc: Exception, message: str, details: dict[str, Any] | None = None) -> CheckResult:
-        return CheckResult(False, "down", error=message, error_type=exception_category(exc), details={"exception_kind": type(exc).__name__, **(details or {})})
+        reasons = {httpx.ConnectTimeout: "connect_timeout", httpx.ReadTimeout: "read_timeout", httpx.WriteTimeout: "write_timeout", httpx.PoolTimeout: "pool_timeout"}
+        category = exception_category(exc)
+        reason = next((name for typ, name in reasons.items() if isinstance(exc, typ)), "")
+        if not reason:
+            reason = {"dns_error": "dns_resolution_failed", "tls_error": "tls_handshake_failed", "network_offline": "local_interface_down", "configuration_error": "invalid_configuration"}.get(category, "")
+        phase = (details or {}).get("phase") or {"dns_error": "resolve", "tls_error": "tls", "configuration_error": "configuration"}.get(category, "connect" if isinstance(exc, (httpx.ConnectError, httpx.ConnectTimeout)) else "request")
+        return CheckResult(False, "down", error=message, error_type=category, reason_code=reason, phase=phase, evidence_source="configuration" if category == "configuration_error" else "transport", details={"exception_kind": type(exc).__name__, **(details or {})})
+
+    def _rule_result(self, monitor: dict[str, Any], response: httpx.Response, response_ms: int, phase: str) -> CheckResult | None:
+        match = match_rules(validate_rules(monitor.get("diagnostic_rules_json")), response, phase)
+        if match is None:
+            return None
+        return CheckResult(False, "down", response_ms=response_ms, status_code=response.status_code,
+            error="Conflicting diagnostic rules" if match["error_type"] == "unknown" else "Diagnostic rule matched",
+            error_type=match["error_type"], reason_code=match.get("reason_code", ""), phase=phase,
+            evidence_source="response_rule", evidence={"status_code": response.status_code, **{key: match[key] for key in ("rule_id", "rule_ids") if key in match}})
 
     def _timeout(self, monitor: dict[str, Any]) -> httpx.Timeout:
         seconds = max(1.0, float(monitor.get("timeout_seconds") or 10.0))
@@ -207,9 +248,12 @@ class SiteChecker:
             try:
                 login_page_response = await client.get(str(login_url), headers=page_headers)
             except (httpx.HTTPError, httpx.InvalidURL) as exc:
-                return self._transport_failure(exc, f"Login page failed: could not open Login URL {login_url}: {exc}", {"phase": "login", "login_url": str(login_url)})
+                return self._transport_failure(exc, f"Login page failed: could not open Login URL {login_url}: {exc}", {"phase": "login_page", "login_url": str(login_url)})
+            page_rule = self._rule_result(monitor, login_page_response, int((time.perf_counter() - start) * 1000), "login_page")
+            if page_rule:
+                return page_rule
             if login_page_response.status_code >= 400:
-                return CheckResult(False, "down", status_code=login_page_response.status_code, error=f"Login page failed: Login URL {login_url} returned HTTP {login_page_response.status_code}", details={"phase": "login", "login_url": str(login_page_response.url)})
+                return CheckResult(False, "down", status_code=login_page_response.status_code, error=f"Login page failed: Login URL {login_url} returned HTTP {login_page_response.status_code}", details={"phase": "login_page", "login_url": str(login_page_response.url)})
             login_page_url = str(login_page_response.url)
             form_data, post_url, form_details = self._auth_form_payload(
                 login_page_response,
@@ -230,11 +274,14 @@ class SiteChecker:
             try:
                 login_response = await client.post(post_url, data=form_data, headers=post_headers)
             except (httpx.HTTPError, httpx.InvalidURL) as exc:
-                return self._transport_failure(exc, f"Login failed: could not submit credentials to {post_url}: {exc}", {"phase": "login", **form_details})
+                return self._transport_failure(exc, f"Login failed: could not submit credentials to {post_url}: {exc}", {"phase": "login_submit", **form_details})
+            login_rule = self._rule_result(monitor, login_response, int((time.perf_counter() - start) * 1000), "login_submit")
+            if login_rule:
+                return login_rule
             credential_fields = {str(username_field), str(password_field)}
             still_has_login_form = any(credential_fields.issubset({item.get("name") for item in form.get("inputs", [])}) for form in parse_login_forms(login_response.text))
             if login_response.status_code == 401 or (200 <= login_response.status_code < 300 and has_login_rejection(login_response.text) and still_has_login_form):
-                return CheckResult(False, "down", status_code=login_response.status_code, error="Login rejected: the server rejected the account/password or authentication token.", error_type="auth_credentials", details={"phase": "login", **form_details})
+                return CheckResult(False, "down", status_code=login_response.status_code, error="Login rejected: the server rejected the account/password or authentication token.", error_type="auth_credentials", details={"phase": "login_submit", **form_details})
             login_redirect = next(
                 (
                     str(response.headers["location"])
@@ -263,7 +310,7 @@ class SiteChecker:
                     response_ms=response_ms,
                     status_code=login_response.status_code,
                     error=f"Login failed: submitting credentials to {post_url} returned HTTP {login_response.status_code}",
-                    details={"phase": "login", **form_details},
+                    details={"phase": "login_submit", **form_details},
                 )
             try:
                 verify_response = await client.get(str(verify_url), headers=page_headers)
@@ -271,7 +318,7 @@ class SiteChecker:
                 return self._transport_failure(exc, f"Verify failed: could not open Verify URL {verify_url}: {exc}", {"phase": "verify", "verify_url": str(verify_url), **form_details})
 
         response_ms = int((time.perf_counter() - start) * 1000)
-        result = self._assert_response(monitor, verify_response, response_ms)
+        result = self._assert_response(monitor, verify_response, response_ms, phase="verify")
         if not result.ok:
             if result.error_type == "assertion_failed" and self._is_login_page(verify_response.url, str(login_url), login_page_url):
                 result.error_type = "auth_verification"
@@ -436,7 +483,7 @@ class SiteChecker:
                     "down",
                     response_ms=response_ms,
                     status_code=response.status_code,
-                    error=f"JSON assertion failed at {path}: expected {expected!r}, got {actual!r}",
+                    error=f"JSON assertion failed at {path}: value did not match",
                     error_type="assertion_failed",
                     details={"json_path": path, "actual": actual},
                 )
@@ -444,7 +491,10 @@ class SiteChecker:
             result.details["json_value"] = actual
         return result
 
-    def _assert_response(self, monitor: dict[str, Any], response: httpx.Response, response_ms: int) -> CheckResult:
+    def _assert_response(self, monitor: dict[str, Any], response: httpx.Response, response_ms: int, phase: str = "response") -> CheckResult:
+        rule_result = self._rule_result(monitor, response, response_ms, phase)
+        if rule_result is not None:
+            return rule_result
         expected_status = int(monitor.get("expected_status") or 200)
         if response.status_code != expected_status:
             return CheckResult(
@@ -455,6 +505,10 @@ class SiteChecker:
                 error=f"Expected HTTP {expected_status}, got {response.status_code}",
                 error_type="auth_credentials" if response.status_code == 401 else "http_error",
             )
+
+        assertion_rule = self._rule_result(monitor, response, response_ms, "assertion")
+        if assertion_rule is not None:
+            return assertion_rule
 
         expected_text = str(monitor.get("expected_text") or "")
         if expected_text and not contains_expected_text(response.text, expected_text):
@@ -471,10 +525,7 @@ class SiteChecker:
         return CheckResult(True, "up", response_ms=response_ms, status_code=response.status_code)
 
     def _missing_text_error(self, message: str, response: httpx.Response, expected_text: str) -> str:
-        return (
-            f"{message}: {expected_text[:120]!r} "
-            f"(final URL: {response.url}, response chars: {len(response.text)})"
-        )
+        return f"{message} (final URL: {response.url}, response chars: {len(response.text)})"
 
     def _response_details(
         self,

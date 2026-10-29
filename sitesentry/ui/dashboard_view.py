@@ -6,7 +6,8 @@ from typing import Any
 
 import customtkinter as ctk
 
-from sitesentry.core.diagnostics import error_label
+from sitesentry.core.diagnostics import ERROR_TYPES, error_label
+from sitesentry.core.privacy import sanitize
 from sitesentry.core.excel_importer import create_monitor_template, import_monitors_from_excel
 from .background import run_background
 from .focus import bind_focus_on_click
@@ -47,16 +48,20 @@ class DashboardView(ctk.CTkFrame):
         self.search = tk.StringVar()
         self.status = tk.StringVar(value="All states")
         self.monitor_type = tk.StringVar(value="All types")
+        self.category = tk.StringVar(value="All errors")
+        self.classification = tk.StringVar(value="All classifications")
         bind_focus_on_click(ctk.CTkEntry(filters, textvariable=self.search, placeholder_text="Search monitor, URL or error", height=32)).grid(row=0, column=0, padx=(0, 8), sticky="ew")
         ctk.CTkOptionMenu(filters, values=["All states", "UP", "DOWN", "Unknown", "Paused"], variable=self.status, width=122, command=lambda _: self._render()).grid(row=0, column=1, padx=(0, 8))
         ctk.CTkOptionMenu(filters, values=["All types", *TYPE_LABELS.values()], variable=self.monitor_type, width=120, command=lambda _: self._render()).grid(row=0, column=2, padx=(0, 8))
         ctk.CTkButton(filters, text="Refresh", width=82, command=self.refresh).grid(row=0, column=3)
+        ctk.CTkOptionMenu(filters, values=["All errors", *ERROR_TYPES.values()], variable=self.category, width=250, command=lambda _: self._render()).grid(row=1, column=0, pady=(8, 0), sticky="w")
+        ctk.CTkOptionMenu(filters, values=["All classifications", "confirmed", "undetermined", "legacy", "not_applicable"], variable=self.classification, width=180, command=lambda _: self._render()).grid(row=1, column=1, columnspan=2, padx=8, pady=(8, 0), sticky="w")
         self.search.trace_add("write", lambda *_: self._render())
         table_frame = ctk.CTkFrame(self, fg_color="transparent")
         table_frame.grid(row=3, column=0, padx=20, sticky="nsew")
-        columns = ("name", "type", "status", "error", "response", "checked", "url")
+        columns = ("name", "type", "status", "error", "classification", "reason", "phase", "response", "checked", "url")
         self.table = ttk.Treeview(table_frame, columns=columns, show="headings", selectmode="browse")
-        for column, title, width in zip(columns, ["Monitor", "Type", "Status", "Error category", "Response", "Last checked", "URL"], [210, 90, 86, 250, 100, 170, 320]):
+        for column, title, width in zip(columns, ["Monitor", "Type", "Status", "Error category", "Classification", "Reason", "Phase", "Response", "Last checked", "URL"], [210, 90, 86, 250, 130, 160, 120, 100, 170, 320]):
             self.table.heading(column, text=title)
             self.table.column(column, width=width, minwidth=70, stretch=column == "name")
         table_scrollers(table_frame, self.table)
@@ -119,13 +124,17 @@ class DashboardView(ctk.CTkFrame):
             if self.monitor_type.get() not in {"All types", type_label}:
                 continue
             category = error_label(monitor.get("last_error_type", "")) if state == "down" else "-"
+            if self.category.get() != "All errors" and category != self.category.get():
+                continue
+            if self.classification.get() != "All classifications" and monitor.get("last_classification_state") != self.classification.get():
+                continue
             if query not in f"{monitor['name']} {monitor['url']} {category} {monitor['last_error']}".casefold():
                 continue
             iid = str(monitor["id"])
             wanted.add(iid)
             checked = str(monitor.get("last_checked_at") or "Never").replace("T", " ")
             response = f"{monitor['last_response_ms']} ms" if monitor["last_response_ms"] is not None else "-"
-            values = (monitor["name"], type_label, state.upper() if monitor["enabled"] else "PAUSED", category, response, checked, monitor["url"])
+            values = (sanitize(monitor["name"], monitor), type_label, state.upper() if monitor["enabled"] else "PAUSED", category, monitor.get("last_classification_state", ""), monitor.get("last_reason_code", ""), monitor.get("last_phase", ""), response, checked, sanitize(monitor["url"], monitor))
             tags = (state, "stripe") if index % 2 else (state,)
             if self.table.exists(iid):
                 self.table.item(iid, values=values, tags=tags)
@@ -150,8 +159,11 @@ class DashboardView(ctk.CTkFrame):
             button.configure(state="normal" if monitor else "disabled")
         self.actions[2].configure(text="Pause" if monitor and monitor["enabled"] else "Enable")
         if monitor:
-            self.selection_label.configure(text=str(monitor["name"]))
-            self.detail.configure(text=monitor["last_error"] if monitor["last_status"] == "down" else monitor["url"])
+            self.selection_label.configure(text=sanitize(str(monitor["name"]), monitor))
+            detail = monitor["last_error"] if monitor["last_status"] == "down" else monitor["url"]
+            if monitor.get("last_classification_state") == "legacy" and monitor["last_status"] == "down":
+                detail = "Legacy diagnostic details withheld"
+            self.detail.configure(text=sanitize(detail, monitor))
         else:
             self.selection_label.configure(text=f"{len(self.table.get_children())} monitor(s)")
             self.detail.configure(text="No monitors" if not self._monitors else "")

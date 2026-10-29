@@ -1,8 +1,9 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 import os
 from pathlib import Path
 import tempfile
 import time
+import threading
 import unittest
 from unittest.mock import patch
 
@@ -102,12 +103,45 @@ class NativeUISmokeTests(unittest.TestCase):
                 screenshot(monitor, "auth-monitor")
                 self.assertEqual(monitor.language_var.get(), "PHP")
                 self.assertEqual(monitor.web_server_var.get(), "Apache")
+                monitor._open_diagnostics()
+                diagnostics = monitor._diagnostic_dialog
+                pump()
+                diagnostics._manage_profiles()
+                profiles = diagnostics._profiles_dialog
+                profiles._edit_profile(None)
+                profile = profiles._profile_dialog
+                profile.name_var.set("VPN QA")
+                profile.scope_var.set("intranet_vpn")
+                profile.target_vars[0][0].set("https://reference.example.test/health")
+                profile._save()
+                self.assertEqual(app.db.get_network_profile("VPN QA")["scope"], "intranet_vpn")
+                profiles.destroy()
+                diagnostics.profile_var.set("VPN QA")
+                diagnostics._edit_rule(None)
+                diagnostics._rule_dialog._save()
+                self.assertEqual(len(diagnostics.rules), 1)
+                diagnostics._save()
+                self.assertEqual(monitor._payload()["network_profile"], "VPN QA")
+                self.assertIn("api-failure", monitor._payload()["diagnostic_rules_json"])
                 from unittest.mock import AsyncMock
                 with patch.object(app.checker, "check_monitor", new=AsyncMock(return_value=CheckResult(False, "down", error="Read timed out", error_type="timeout"))):
                     monitor._test_run()
                     pump(lambda: monitor.test_button.cget("state") == "normal")
                     self.assertIn("Website not responding", monitor.result_label.cget("text"))
-                monitor.destroy()
+                callback_ran = threading.Event()
+                worker_finished = threading.Event()
+                async def slow_check(_data):
+                    import asyncio
+                    await asyncio.sleep(3)
+                    worker_finished.set()
+                    return CheckResult(True, "up")
+                with patch.object(app.checker, "check_monitor", new=AsyncMock(side_effect=slow_check)):
+                    monitor._test_run()
+                    app.after(200, callback_ran.set)
+                    pump(callback_ran.is_set)
+                    self.assertFalse(worker_finished.is_set())
+                    monitor.destroy()
+                    pump(worker_finished.is_set)
                 app.show_view("Dashboard")
                 dashboard = app._current_view
                 pump(lambda: not dashboard._busy)
@@ -121,7 +155,15 @@ class NativeUISmokeTests(unittest.TestCase):
                 dashboard.search.set("Portal QA")
                 self.assertEqual(len(dashboard.table.get_children()), 1)
                 for name in ["QA website", "QA API"]:
-                    app.db.save_monitor({"name": name, "url": "https://example.test", "monitor_type": "api" if "API" in name else "simple_web"})
+                    kind = "api" if "API" in name else "simple_web"
+                    new_id = app.db.save_monitor({"name": name, "url": "https://example.test", "monitor_type": kind})
+                    editor = MonitorDialog(app, app.db.get_monitor(new_id))
+                    pump()
+                    self.assertEqual(editor._payload()["monitor_type"], kind)
+                    editor._open_diagnostics()
+                    pump()
+                    editor._diagnostic_dialog.destroy()
+                    editor.destroy()
                 dashboard.refresh()
                 pump(lambda: not dashboard._busy)
                 dashboard.search.set("")
@@ -150,6 +192,21 @@ class NativeUISmokeTests(unittest.TestCase):
                 rule = app.db.list_email_rules()[0]
                 self.assertEqual(rule["batch_window_seconds"], 30)
                 self.assertIn("auth_credentials", rule["excluded_error_types_json"])
+                app.db.set_setting("smtp_enabled", "1")
+                app.db.record_check_result(monitor_id, CheckResult(False, "down", status_code=503))
+                pending = app.db.pending_email_deliveries(now=datetime.now() + timedelta(seconds=31))
+                self.assertTrue(pending)
+                delivery_id = pending[0]["delivery_id"]
+                app.db.mark_delivery_attempt(delivery_id)
+                app.db.finish_email_delivery(delivery_id, False, "delivery_uncertain: synthetic")
+                settings._show_queue()
+                queue_dialog = settings._queue_dialog
+                queue_dialog.table.selection_set(str(delivery_id))
+                with patch("sitesentry.ui.settings_view.messagebox.askyesno", return_value=True):
+                    queue_dialog._retry()
+                self.assertEqual(app.db.email_delivery_counts().get("pending"), 1)
+                queue_dialog.destroy()
+                app.db.set_setting("smtp_enabled", "0")
                 app.geometry("1160x760+40+60")
                 settings.theme_var.set("Dark")
                 self.assertTrue(settings._save())

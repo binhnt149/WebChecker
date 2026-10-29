@@ -77,16 +77,16 @@ def export_report(report: dict[str, Any], path: str | Path) -> None:
     _append(summary, ["From", datetime.fromisoformat(report["start_at"]), "", "To", datetime.fromisoformat(report["end_at"])])
     _append(summary, ["Observed through", datetime.fromisoformat(report["as_of"]), "", "DOWN checks", report["down_count"], "", "Incidents", len(report["incidents"])])
     _append(summary, ["DOWN checks count log observations. Average downtime is per incident. Open incidents are measured through the observation time."])
-    summary.merge_cells("A1:J1")
+    summary.merge_cells("A1:M1")
     summary.merge_cells("B2:C2")
     summary.merge_cells("E2:F2")
     summary.merge_cells("B3:C3")
-    summary.merge_cells("A4:J4")
-    _append(summary, ["Monitor name", "DOWN checks", "Incidents", "Total DOWN", "Average DOWN", "Open incidents", "Language", "Web server", "Last status", "Current error category"])
+    summary.merge_cells("A4:M4")
+    _append(summary, ["Monitor name", "DOWN checks", "Incidents", "Total DOWN", "Average DOWN", "Open incidents", "Language", "Web server", "Last status", "Current error category", "Classification", "Reason code", "Phase"])
     for row in report["rows"]:
-        _append(summary, [row["monitor_name"], row["down_count"], row["incident_count"], row["downtime_seconds"] / 86400, row["average_down_seconds"] / 86400, row["open_incidents"], row["language"], row["web_server"], row["last_status"].upper(), error_label(row.get("last_error_type", ""))])
+        _append(summary, [row["monitor_name"], row["down_count"], row["incident_count"], row["downtime_seconds"] / 86400, row["average_down_seconds"] / 86400, row["open_incidents"], row["language"], row["web_server"], row["last_status"].upper(), error_label(row.get("last_error_type", "")), row.get("last_classification_state", ""), row.get("last_reason_code", ""), row.get("last_phase", "")])
     last_data = summary.max_row
-    _style(summary, 5, [34, 15, 13, 20, 20, 16, 18, 20, 14, 36], last_data)
+    _style(summary, 5, [34, 15, 13, 20, 20, 16, 18, 20, 14, 36, 20, 25, 20], last_data)
     summary["A1"].font = Font(name="Arial", size=16, bold=True, color=INK)
     summary["A1"].border = Border(bottom=Side(style="thin", color=TEAL))
     summary["A4"].font = Font(name="Arial", size=10, italic=True, color="52616B")
@@ -111,10 +111,10 @@ def export_report(report: dict[str, Any], path: str | Path) -> None:
             cell.border = Border(top=Side(style="thin", color=LINE))
         summary.cell(total_row, 4).number_format = summary.cell(total_row, 5).number_format = "[h]:mm:ss"
     details = workbook.create_sheet("Incidents")
-    _append(details, ["Monitor name", "Counted from", "Counted until", "Recovered at", "Duration", "Carried in", "Still DOWN", "Error categories"])
+    _append(details, ["Monitor name", "Counted from", "Counted until", "Recovered at", "Duration", "Carried in", "Still DOWN", "Error categories", "Classification", "Reason codes"])
     for incident in report["incidents"]:
-        _append(details, [incident["monitor_name"], datetime.fromisoformat(incident["counted_from"]), datetime.fromisoformat(incident["counted_until"]), datetime.fromisoformat(incident["recovered_at"]) if incident["recovered_at"] else None, incident["duration_seconds"] / 86400, "Yes" if incident["carried_in"] else "No", "Yes" if incident["open"] else "No", ", ".join(error_label(code) for code in incident.get("error_types", []))])
-    _style(details, 1, [34, 24, 24, 24, 20, 13, 13, 48], details.max_row)
+        _append(details, [incident["monitor_name"], datetime.fromisoformat(incident["counted_from"]), datetime.fromisoformat(incident["counted_until"]), datetime.fromisoformat(incident["recovered_at"]) if incident["recovered_at"] else None, incident["duration_seconds"] / 86400, "Yes" if incident["carried_in"] else "No", "Yes" if incident["open"] else "No", ", ".join(error_label(code) for code in incident.get("error_types", [])), ", ".join(incident.get("classification_states", [])), ", ".join(incident.get("reason_codes", []))])
+    _style(details, 1, [34, 24, 24, 24, 20, 13, 13, 48, 22, 36], details.max_row)
     for row in details.iter_rows(min_row=2):
         for cell in row[1:4]:
             cell.number_format = DATE_FORMAT
@@ -122,12 +122,16 @@ def export_report(report: dict[str, Any], path: str | Path) -> None:
         for cell in row[5:7]:
             cell.alignment = Alignment(horizontal="center", vertical="center")
     errors = workbook.create_sheet("Error breakdown")
-    _append(errors, ["Monitor name", "Error code", "Error category", "DOWN checks"])
+    _append(errors, ["Monitor name", "Error code", "Error category", "DOWN checks", "Classification", "Reason code", "Phase"])
     for row in report["rows"]:
-        for code, count in sorted(row.get("error_counts", {}).items()):
-            _append(errors, [row["monitor_name"], code, error_label(code), count])
-    _style(errors, 1, [34, 26, 48, 18], errors.max_row)
-    summary.print_area = f"A1:J{summary.max_row}"
+        counts = row.get("diagnostic_counts")
+        if counts is None:
+            counts = [{"error_type": code, "count": count} for code, count in sorted(row.get("error_counts", {}).items())]
+        for item in counts:
+            code = item["error_type"]
+            _append(errors, [row["monitor_name"], code, error_label(code), item["count"], item.get("classification_state", ""), item.get("reason_code", ""), item.get("phase", "")])
+    _style(errors, 1, [34, 26, 48, 18, 20, 25, 20], errors.max_row)
+    summary.print_area = f"A1:M{summary.max_row}"
     workbook.save(path)
 
 

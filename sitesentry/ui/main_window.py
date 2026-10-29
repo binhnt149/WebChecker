@@ -91,7 +91,7 @@ class SiteSentryApp(ctk.CTk):
         self.db = Database(self.config.get("database_path", "data/sitesentry.db"), security=self.security)
         saved_appearance = self.db.get_setting("appearance", appearance)
         ctk.set_appearance_mode(saved_appearance)
-        self.checker = SiteChecker()
+        self.checker = SiteChecker(profile_resolver=self.db.get_network_profile)
         self.notifier = EmailNotifier(self.db)
         self.scheduler = MonitorScheduler(self.db, self.checker, self.notifier, on_result=self._on_monitor_result)
 

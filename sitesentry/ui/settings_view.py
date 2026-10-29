@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import tkinter as tk
-from tkinter import messagebox
+from tkinter import messagebox, ttk
 from typing import Any
 
 import customtkinter as ctk
@@ -10,7 +10,7 @@ from sitesentry.core.email_rules import RULE_TYPES, parse_recipients
 from .background import run_background
 from .email_rule_dialog import EmailRuleDialog
 from .focus import bind_focus_on_click
-from .theme import polish
+from .theme import polish, table_scrollers
 from sitesentry.core.diagnostics import decoded_exclusions
 
 
@@ -28,6 +28,7 @@ class SettingsView(ctk.CTkFrame):
         ctk.CTkButton(header, text="Save", command=self._save, width=90).grid(row=0, column=1, padx=6)
         self.test_button = ctk.CTkButton(header, text="Test Email", command=self._test_email, width=110)
         self.test_button.grid(row=0, column=2, padx=(6, 0))
+        ctk.CTkButton(header, text="Delivery queue", command=self._show_queue, width=120).grid(row=0, column=3, padx=(6, 0))
         tabs = ctk.CTkTabview(self, corner_radius=8)
         self.tabs = tabs
         tabs.grid(row=1, column=0, padx=20, pady=8, sticky="nsew")
@@ -177,3 +178,55 @@ class SettingsView(ctk.CTkFrame):
         if not self._save():
             return
         run_background(self.app, self, lambda: self.app.scheduler.queue_daily_summary(rule_id, manual=True), lambda queued: self.status_label.configure(text="Summary queued" if queued else "Summary not queued: check SMTP and schedule status"))
+
+    def _show_queue(self) -> None:
+        self._queue_dialog = DeliveryQueueDialog(self, self.app, self._refresh_rules)
+
+
+class DeliveryQueueDialog(ctk.CTkToplevel):
+    def __init__(self, master: Any, app: Any, on_change: Any) -> None:
+        super().__init__(master)
+        self.app, self.on_change = app, on_change
+        self.title("Delivery queue")
+        self.geometry("800x450")
+        self.transient(master)
+        self.grid_columnconfigure(0, weight=1)
+        self.grid_rowconfigure(1, weight=1)
+        ctk.CTkLabel(self, text="Held: unclassified. Uncertain: SMTP may already have accepted the message.", wraplength=720).grid(row=0, column=0, padx=16, pady=12, sticky="w")
+        frame = ctk.CTkFrame(self, fg_color="transparent")
+        frame.grid(row=1, column=0, padx=16, sticky="nsew")
+        self.table = ttk.Treeview(frame, columns=("status", "monitor", "schedule", "kind", "category"), show="headings", selectmode="browse")
+        for column, title, width in [("status", "Status", 150), ("monitor", "Monitor", 170), ("schedule", "Schedule", 140), ("kind", "Event", 90), ("category", "Category", 140)]:
+            self.table.heading(column, text=title)
+            self.table.column(column, width=width)
+        table_scrollers(frame, self.table)
+        actions = ctk.CTkFrame(self, fg_color="transparent")
+        actions.grid(row=2, column=0, padx=16, pady=12, sticky="ew")
+        ctk.CTkButton(actions, text="Refresh", width=90, command=self._refresh).pack(side="left", padx=4)
+        ctk.CTkButton(actions, text="Retry uncertain", width=130, command=self._retry).pack(side="left", padx=4)
+        ctk.CTkButton(actions, text="Close", width=90, command=self.destroy).pack(side="right")
+        self._refresh()
+        polish(self)
+
+    def _refresh(self) -> None:
+        self.table.delete(*self.table.get_children())
+        for item in self.app.db.list_problem_deliveries():
+            self.table.insert("", "end", iid=str(item["id"]), values=(item["status"], item["monitor_name"], item["rule_name"], item["kind"], item["error_type"]))
+        self.on_change()
+
+    def _retry(self) -> None:
+        selected = self.table.selection()
+        if not selected:
+            return
+        if self.table.item(selected[0], "values")[0] != "delivery_uncertain":
+            messagebox.showinfo("Delivery queue", "Held incidents must be classified by a new monitor check.", parent=self)
+            return
+        if not messagebox.askyesno("Retry delivery", "SMTP may already have accepted this message. Retrying can send a duplicate. Continue?", parent=self):
+            return
+        try:
+            self.app.db.retry_uncertain_delivery(int(selected[0]))
+        except ValueError as exc:
+            messagebox.showerror("Delivery queue", str(exc), parent=self)
+            return
+        self.app.notifier.wake()
+        self._refresh()

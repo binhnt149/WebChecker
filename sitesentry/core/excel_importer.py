@@ -11,6 +11,7 @@ from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.worksheet.datavalidation import DataValidation
 
 from .database import Database, as_float, as_int
+from .diagnostic_rules import validate_rules
 
 
 MONITOR_COLUMNS = [
@@ -44,6 +45,8 @@ MONITOR_COLUMNS = [
     "cooldown_minutes",
     "language",
     "web_server",
+    "network_profile",
+    "diagnostic_rules_json",
 ]
 
 TYPE_ALIASES = {
@@ -98,7 +101,7 @@ def create_monitor_template(path: str | Path) -> Path:
             "language": "PHP",
             "web_server": "Apache",
             "monitor_type": "simple_web",
-            "enabled": 1,
+            "enabled": 0,
             "url": "https://example.com",
             "method": "GET",
             "interval_seconds": 60,
@@ -115,7 +118,7 @@ def create_monitor_template(path: str | Path) -> Path:
             "language": "Python",
             "web_server": "Nginx",
             "monitor_type": "api",
-            "enabled": 1,
+            "enabled": 0,
             "url": "https://api.example.com/health",
             "method": "GET",
             "interval_seconds": 60,
@@ -123,6 +126,7 @@ def create_monitor_template(path: str | Path) -> Path:
             "expected_status": 200,
             "expected_json_path": "status",
             "expected_json_value": "ok",
+            "diagnostic_rules_json": json.dumps([{"id": "api-failure", "enabled": True, "priority": 100, "phase": "response", "conditions": [{"source": "json", "path": "success", "operator": "equals", "value": False}], "result": {"error_type": "assertion_failed", "reason_code": "business_rule_match"}}]),
             "headers_json": '{"Accept":"application/json"}',
             "api_token_header": "Authorization",
             "api_token_prefix": "Bearer",
@@ -200,21 +204,20 @@ def _import_workbook(db: Database, wb: Any) -> ImportResult:
             result.skipped += 1
             continue
 
-        monitor_id = as_int(values.get("id"), 0)
-        if monitor_id and db.get_monitor(monitor_id):
-            payload["id"] = monitor_id
-            db.save_monitor(payload)
-            result.updated += 1
-            continue
-
-        existing = db.find_monitor_by_name_url(payload["name"], payload["url"])
-        if existing:
-            payload["id"] = existing["id"]
-            db.save_monitor(payload)
-            result.updated += 1
-        else:
-            db.save_monitor(payload)
-            result.created += 1
+        try:
+            monitor_id = as_int(values.get("id"), 0)
+            existing = db.get_monitor(monitor_id) if monitor_id else None
+            existing = existing or db.find_monitor_by_name_url(payload["name"], payload["url"])
+            if existing:
+                payload["id"] = existing["id"]
+                db.save_monitor(payload)
+                result.updated += 1
+            else:
+                db.save_monitor(payload)
+                result.created += 1
+        except ValueError as exc:
+            result.errors.append(f"Row {row_number}: {exc}")
+            result.skipped += 1
 
     return result
 
@@ -250,7 +253,7 @@ def _normalize_monitor(values: dict[str, Any]) -> dict[str, Any]:
     headers_json = _json_object_text(values.get("headers_json"), "headers_json", default="{}")
     auth_extra_fields = _json_object_text(values.get("auth_extra_fields"), "auth_extra_fields", default="{}")
 
-    return {
+    payload = {
         "name": name,
         "monitor_type": monitor_type,
         "enabled": _bool_value(values.get("enabled"), default=True),
@@ -280,6 +283,16 @@ def _normalize_monitor(values: dict[str, Any]) -> dict[str, Any]:
         "cooldown_minutes": max(0, as_int(values.get("cooldown_minutes"), 30)),
         **{key: str(values.get(key) or "").strip() for key in ("language", "web_server") if key in values},
     }
+    profile = str(values.get("network_profile") or "").strip()
+    if profile:
+        payload["network_profile"] = "" if profile == "__CLEAR__" else profile
+    raw_rules = str(values.get("diagnostic_rules_json") or "").strip()
+    if raw_rules:
+        try:
+            payload["diagnostic_rules_json"] = json.dumps(validate_rules(raw_rules), ensure_ascii=False)
+        except ValueError as exc:
+            raise ValueError(f"diagnostic_rules_json: {exc}") from exc
+    return payload
 
 
 def _bool_value(value: Any, default: bool = True) -> bool:
@@ -331,12 +344,14 @@ def _style_template_sheet(ws: Any) -> None:
         "O": 28,
         "R": 34,
         "X": 34,
+        "AE": 24,
+        "AF": 58,
     }
     for column_cells in ws.columns:
         letter = column_cells[0].column_letter
         ws.column_dimensions[letter].width = widths.get(letter, 18)
     for row in ws.iter_rows(min_row=2):
-        ws.row_dimensions[row[0].row].height = 42
+        ws.row_dimensions[row[0].row].height = 84 if row[0].row == 3 else 42
         for cell in row:
             cell.alignment = Alignment(vertical="top", wrap_text=True)
 
@@ -364,6 +379,8 @@ def _add_instructions(wb: Workbook) -> None:
         ("url", "Yes", "Target website, protected page, or API endpoint."),
         ("language", "No", "Application language/framework, for example PHP, Python, Java, ASP.NET."),
         ("web_server", "No", "Web server, for example Apache, Nginx, IIS, Tomcat."),
+        ("network_profile", "No", "Existing network profile; blank preserves it; __CLEAR__ removes it."),
+        ("diagnostic_rules_json", "No", "JSON array of rules; blank preserves existing rules; [] clears them. See the Health API example and checker-spec.md §7. Configure profiles first."),
         ("headers_json", "No", "JSON object, for example {\"Accept\":\"application/json\"}."),
         ("body", "No", "Request body for API methods such as POST/PUT/PATCH."),
         ("api_token", "No", "Stored encrypted after import."),
@@ -380,6 +397,6 @@ def _add_instructions(wb: Workbook) -> None:
     ws.column_dimensions["B"].width = 14
     ws.column_dimensions["C"].width = 100
     for row in ws.iter_rows():
-        ws.row_dimensions[row[0].row].height = 34 if row[0].row > 1 else 24
+        ws.row_dimensions[row[0].row].height = (56 if row[0].value == "diagnostic_rules_json" else 34) if row[0].row > 1 else 24
         for cell in row:
             cell.alignment = Alignment(vertical="top", wrap_text=True)

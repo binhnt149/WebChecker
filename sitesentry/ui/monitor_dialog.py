@@ -12,6 +12,8 @@ from .focus import bind_focus_on_click
 from .theme import fit_wrap, polish
 from .background import run_background
 from sitesentry.core.diagnostics import error_label
+from sitesentry.core.diagnostic_rules import validate_rules
+from .diagnostics_dialog import MonitorDiagnosticsDialog
 
 
 SaveCallback = Callable[[], None]
@@ -36,6 +38,9 @@ class MonitorDialog(ctk.CTkToplevel):
         super().__init__(master)
         self.app = master
         self.monitor = monitor or {}
+        self._diagnostic_profile = str(self.monitor.get("network_profile") or "")
+        self._diagnostic_rules = str(self.monitor.get("diagnostic_rules_json") or "[]")
+        self._diagnostic_dialog: MonitorDiagnosticsDialog | None = None
         self.on_save = on_save
         self._first_focus_widget: ctk.CTkEntry | None = None
         self.title("Monitor")
@@ -125,6 +130,26 @@ class MonitorDialog(ctk.CTkToplevel):
         self.expected_text = bind_focus_on_click(ctk.CTkTextbox(frame, height=48))
         ctk.CTkLabel(frame, text="Expected text").grid(row=6, column=0, padx=8, pady=(6, 0), sticky="w")
         self.expected_text.grid(row=7, column=0, columnspan=6, padx=8, pady=(0, 6), sticky="ew")
+        ctk.CTkButton(frame, text="Network & diagnostic rules", command=self._open_diagnostics, width=205).grid(row=8, column=0, columnspan=2, padx=8, pady=(2, 8), sticky="w")
+        self.diagnostic_summary = ctk.CTkLabel(frame, text="", anchor="w")
+        self.diagnostic_summary.grid(row=8, column=2, columnspan=4, padx=8, sticky="ew")
+        self._update_diagnostic_summary()
+
+    def _update_diagnostic_summary(self) -> None:
+        try:
+            count = len(validate_rules(self._diagnostic_rules))
+        except ValueError:
+            count = 0
+        self.diagnostic_summary.configure(text=f"Profile: {self._diagnostic_profile or 'None'} | Rules: {count}")
+
+    def _open_diagnostics(self) -> None:
+        if self._diagnostic_dialog is not None and self._diagnostic_dialog.winfo_exists():
+            self._diagnostic_dialog.lift()
+            return
+        def save(profile: str, rules: str) -> None:
+            self._diagnostic_profile, self._diagnostic_rules = profile, rules
+            self._update_diagnostic_summary()
+        self._diagnostic_dialog = MonitorDiagnosticsDialog(self, self._diagnostic_profile, self._diagnostic_rules, save)
 
     def _build_tabs(self) -> None:
         self.tabs = ctk.CTkTabview(self, corner_radius=8)
@@ -447,6 +472,8 @@ class MonitorDialog(ctk.CTkToplevel):
             "name": self.name_var.get().strip(),
             "language": self.language_var.get().strip(),
             "web_server": self.web_server_var.get().strip(),
+            "network_profile": self._diagnostic_profile,
+            "diagnostic_rules_json": self._diagnostic_rules,
             "enabled": self.enabled_var.get(),
             "monitor_type": monitor_type,
             "url": url,
@@ -546,6 +573,12 @@ class MonitorDialog(ctk.CTkToplevel):
                 errors.append("JSON path is required when Expected JSON value is filled.")
 
         json_fields = [(data.get("headers_json"), "Headers JSON")]
+        try:
+            validate_rules(data.get("diagnostic_rules_json"))
+            if data.get("network_profile") and not self.app.db.get_network_profile(data["network_profile"]):
+                raise ValueError("Network profile does not exist")
+        except ValueError as exc:
+            errors.append(f"Diagnostics: {exc}.")
         if monitor_type == "auth_web":
             json_fields.append((data.get("auth_extra_fields"), "Extra login fields JSON"))
         for raw, label in json_fields:
@@ -607,7 +640,9 @@ class MonitorDialog(ctk.CTkToplevel):
             response_ms = result.response_ms if result.response_ms is not None else "-"
             suffix = f"{http_info}{response_ms} ms, attempts {result.attempts}"
             color = SUCCESS_COLOR if result.ok else ERROR_COLOR
-            self._test_details = f"{error_label(result.error_type)}\n{message}\n{suffix}"
+            evidence = json.dumps(result.evidence, ensure_ascii=False, indent=2)
+            classification = result.classification_state or ("not_applicable" if result.ok else "confirmed" if result.error_type != "unknown" else "undetermined")
+            self._test_details = f"{error_label(result.error_type)}\nClassification: {classification}\nPhase: {result.phase or '-'}\nReason: {result.reason_code or '-'}\nEvidence source: {result.evidence_source or '-'}\nEvidence: {evidence}\n{message}\n{suffix}"
             brief = "UP" if result.ok else f"{error_label(result.error_type)}: {result.error[:220]}"
             self.result_label.configure(text=f"{brief} ({suffix})", text_color=color)
             self.test_button.configure(state="normal")

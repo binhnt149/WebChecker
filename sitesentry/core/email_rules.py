@@ -16,7 +16,7 @@ RULE_TYPES = {
 WEEKDAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
 TEMPLATE_FIELDS = {
     "monitor_name", "url", "status", "checked_at", "error", "date",
-    "total", "up", "down", "unknown", "down_count", "downtime", "error_type", "monitor_count",
+    "total", "up", "down", "unknown", "down_count", "downtime", "error_type", "monitor_count", "reason_code", "phase", "classification_state",
 }
 
 

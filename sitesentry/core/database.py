@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 import threading
 from datetime import datetime
@@ -8,6 +9,8 @@ from typing import Any
 
 from .security import SecurityManager
 from .notification_store import NotificationStore
+from .diagnostic_rules import validate_rules
+from .network_diagnostics import validate_profile
 
 
 SECRET_MONITOR_FIELDS = {
@@ -16,7 +19,10 @@ SECRET_MONITOR_FIELDS = {
     "api_token": "api_token_enc",
     "auth_password": "auth_password_enc",
     "auth_extra_fields": "auth_extra_fields_enc",
+    "diagnostic_rules_json": "diagnostic_rules_enc",
 }
+
+SCHEMA_VERSION = 1
 
 
 def now_iso() -> str:
@@ -127,6 +133,11 @@ class Database(NotificationStore):
                 CREATE INDEX IF NOT EXISTS idx_logs_monitor_id ON logs(monitor_id);
                 CREATE INDEX IF NOT EXISTS idx_monitors_enabled ON monitors(enabled);
 
+                CREATE TABLE IF NOT EXISTS network_profiles (
+                    name TEXT PRIMARY KEY,
+                    definition_json TEXT NOT NULL
+                );
+
                 CREATE TABLE IF NOT EXISTS email_rules (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     name TEXT NOT NULL,
@@ -172,10 +183,28 @@ class Database(NotificationStore):
             if "last_error_type" not in columns:
                 self._conn.execute("ALTER TABLE monitors ADD COLUMN last_error_type TEXT NOT NULL DEFAULT ''")
                 self._conn.execute("UPDATE monitors SET last_error_type = 'unknown' WHERE last_status = 'down'")
+            for name, definition in {
+                "network_profile": "TEXT NOT NULL DEFAULT ''",
+                "diagnostic_rules_enc": "TEXT NOT NULL DEFAULT ''",
+                "last_classification_state": "TEXT NOT NULL DEFAULT 'legacy'",
+                "last_reason_code": "TEXT NOT NULL DEFAULT ''",
+                "last_phase": "TEXT NOT NULL DEFAULT ''",
+            }.items():
+                if name not in columns:
+                    self._conn.execute(f"ALTER TABLE monitors ADD COLUMN {name} {definition}")
             log_columns = {row["name"] for row in self._conn.execute("PRAGMA table_info(logs)")}
             if "error_type" not in log_columns:
                 self._conn.execute("ALTER TABLE logs ADD COLUMN error_type TEXT NOT NULL DEFAULT ''")
                 self._conn.execute("UPDATE logs SET error_type = 'unknown' WHERE status = 'down'")
+            for name, definition in {
+                "classification_state": "TEXT NOT NULL DEFAULT 'legacy'",
+                "reason_code": "TEXT NOT NULL DEFAULT ''",
+                "phase": "TEXT NOT NULL DEFAULT ''",
+                "evidence_source": "TEXT NOT NULL DEFAULT ''",
+                "evidence_json": "TEXT NOT NULL DEFAULT '{}'",
+            }.items():
+                if name not in log_columns:
+                    self._conn.execute(f"ALTER TABLE logs ADD COLUMN {name} {definition}")
             delivery_columns = {row["name"] for row in self._conn.execute("PRAGMA table_info(email_deliveries)")}
             if "remaining_recipients_json" not in delivery_columns:
                 self._conn.execute("ALTER TABLE email_deliveries ADD COLUMN remaining_recipients_json TEXT")
@@ -190,6 +219,9 @@ class Database(NotificationStore):
                     "INSERT INTO settings (key, value, updated_at) VALUES ('email_rules_initialized', '1', ?)", (stamp,),
                 )
             self.init_notification_features()
+            version = self._conn.execute("PRAGMA user_version").fetchone()[0]
+            if version < SCHEMA_VERSION:
+                self._conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
 
     def close(self) -> None:
         with self._lock:
@@ -202,6 +234,7 @@ class Database(NotificationStore):
         for plain_key, column in SECRET_MONITOR_FIELDS.items():
             data[plain_key] = self.security.decrypt(data.get(column))
             data.pop(column, None)
+        data["diagnostic_rules_json"] = data["diagnostic_rules_json"] or "[]"
         return data
 
     def _monitor_payload(self, data: dict[str, Any]) -> dict[str, Any]:
@@ -212,6 +245,7 @@ class Database(NotificationStore):
             "url": str(data.get("url") or "").strip(),
             "language": str(data.get("language") or "").strip(),
             "web_server": str(data.get("web_server") or "").strip(),
+            "network_profile": str(data.get("network_profile") or "").strip(),
             "method": str(data.get("method") or "GET").upper(),
             "interval_seconds": max(10, as_int(data.get("interval_seconds"), 60)),
             "timeout_seconds": max(1.0, as_float(data.get("timeout_seconds"), 10.0)),
@@ -231,9 +265,32 @@ class Database(NotificationStore):
             "retry_delay_seconds": max(0.0, as_float(data.get("retry_delay_seconds"), 2.0)),
             "cooldown_minutes": max(0, as_int(data.get("cooldown_minutes"), 30)),
         }
+        rules = json.dumps(validate_rules(data.get("diagnostic_rules_json")), ensure_ascii=False)
         for plain_key, column in SECRET_MONITOR_FIELDS.items():
-            payload[column] = self.security.encrypt(data.get(plain_key) or "")
+            payload[column] = self.security.encrypt(rules if plain_key == "diagnostic_rules_json" else data.get(plain_key) or "")
         return payload
+
+    def list_network_profiles(self) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self._conn.execute("SELECT definition_json FROM network_profiles ORDER BY name COLLATE NOCASE").fetchall()
+        return [json.loads(row[0]) for row in rows]
+
+    def get_network_profile(self, name: str) -> dict[str, Any] | None:
+        with self._lock:
+            row = self._conn.execute("SELECT definition_json FROM network_profiles WHERE name = ?", (name,)).fetchone()
+        return json.loads(row[0]) if row else None
+
+    def save_network_profile(self, data: dict[str, Any]) -> str:
+        profile = validate_profile(data)
+        with self._lock, self._conn:
+            self._conn.execute("INSERT INTO network_profiles (name, definition_json) VALUES (?, ?) ON CONFLICT(name) DO UPDATE SET definition_json = excluded.definition_json", (profile["name"], json.dumps(profile, ensure_ascii=False)))
+        return profile["name"]
+
+    def delete_network_profile(self, name: str) -> None:
+        with self._lock, self._conn:
+            if self._conn.execute("SELECT 1 FROM monitors WHERE network_profile = ? LIMIT 1", (name,)).fetchone():
+                raise ValueError("Network profile is used by a monitor")
+            self._conn.execute("DELETE FROM network_profiles WHERE name = ?", (name,))
 
     def list_monitors(self, include_disabled: bool = True) -> list[dict[str, Any]]:
         sql = "SELECT * FROM monitors"
@@ -263,12 +320,14 @@ class Database(NotificationStore):
         monitor_id = data.get("id")
         with self._lock, self._conn:
             data = dict(data)
-            if monitor_id and ("language" not in data or "web_server" not in data):
-                existing = self._conn.execute("SELECT language, web_server FROM monitors WHERE id = ?", (monitor_id,)).fetchone()
+            if monitor_id:
+                existing = self._monitor_row_to_dict(self._conn.execute("SELECT * FROM monitors WHERE id = ?", (monitor_id,)).fetchone())
                 if existing:
-                    for field in ("language", "web_server"):
+                    for field in ("language", "web_server", "network_profile", "diagnostic_rules_json"):
                         data.setdefault(field, existing[field])
             payload = self._monitor_payload(data)
+            if payload["network_profile"] and not self._conn.execute("SELECT 1 FROM network_profiles WHERE name = ?", (payload["network_profile"],)).fetchone():
+                raise ValueError("network_profile: profile does not exist")
             if monitor_id:
                 payload["updated_at"] = stamp
                 assignments = ", ".join(f"{key} = ?" for key in payload)
@@ -348,9 +407,9 @@ class Database(NotificationStore):
                 """
                 INSERT INTO logs (
                     monitor_id, monitor_name, status, ok, response_ms, status_code,
-                    error, attempts, checked_at, detail_json, error_type
+                    error, attempts, checked_at, detail_json, error_type, classification_state
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     monitor_id,
@@ -364,6 +423,7 @@ class Database(NotificationStore):
                     checked_at or now_iso(),
                     detail_json,
                     error_type or ("unknown" if status == "down" else ""),
+                    "not_applicable" if ok else ("confirmed" if error_type and error_type != "unknown" else "undetermined"),
                 ),
             )
             return int(cur.lastrowid)
@@ -376,12 +436,24 @@ class Database(NotificationStore):
         start_at: str | None = None,
         end_at: str | None = None,
         error_type: str | None = None,
+        classification_state: str | None = None,
+        phase: str | None = None,
+        monitor_name: str | None = None,
     ) -> list[dict[str, Any]]:
         where: list[str] = []
         params: list[Any] = []
         if error_type and error_type != "all":
             where.append("error_type = ?")
             params.append(error_type)
+        if classification_state and classification_state != "all":
+            where.append("classification_state = ?")
+            params.append(classification_state)
+        if phase and phase != "all":
+            where.append("phase = ?")
+            params.append(phase)
+        if monitor_name:
+            where.append("instr(lower(monitor_name), lower(?)) > 0")
+            params.append(monitor_name)
         if status_filter and status_filter != "all":
             where.append("status = ?")
             params.append(status_filter)
@@ -402,7 +474,15 @@ class Database(NotificationStore):
         params.append(limit)
         with self._lock:
             rows = self._conn.execute(sql, params).fetchall()
-        return [dict(row) for row in rows]
+        result = []
+        for row in rows:
+            item = dict(row)
+            if item["classification_state"] == "legacy":
+                item["error"] = "Legacy diagnostic details withheld" if item["error"] else ""
+                item["detail_json"] = "{}"
+                item["evidence_json"] = "{}"
+            result.append(item)
+        return result
 
     def clear_logs(self) -> None:
         with self._lock, self._conn:
@@ -419,9 +499,9 @@ class Database(NotificationStore):
                     ) AS position
                     FROM logs WHERE checked_at < ?
                 )
-                SELECT id, monitor_id, monitor_name, status, checked_at, error_type FROM earlier WHERE position = 1
+                SELECT id, monitor_id, monitor_name, status, checked_at, error_type, classification_state, reason_code, phase FROM earlier WHERE position = 1
                 UNION ALL
-                SELECT id, monitor_id, monitor_name, status, checked_at, error_type FROM logs WHERE checked_at >= ? AND checked_at <= ?
+                SELECT id, monitor_id, monitor_name, status, checked_at, error_type, classification_state, reason_code, phase FROM logs WHERE checked_at >= ? AND checked_at <= ?
                 ORDER BY checked_at, id
                 """, (start_at, start_at, end_at),
             ).fetchall()

@@ -16,6 +16,7 @@ from .database import Database
 from .email_rules import parse_recipients, render_template
 from .reports import filter_email_summary, format_duration
 from .diagnostics import decoded_exclusions, error_label
+from .privacy import sanitize
 
 
 class EmailNotifier:
@@ -88,9 +89,14 @@ class EmailNotifier:
             members = self.db.email_batch_members(delivery["batch_id"])
             if len(members) > 1:
                 return self._batch_message(delivery, members)
-        payload = json.loads(delivery["payload_json"])
+        payload = self._safe_payload(json.loads(delivery["payload_json"]))
         if delivery["kind"] == "daily_summary":
-            report = filter_email_summary(payload["report"], decoded_exclusions(delivery))
+            raw_report = payload["report"]
+            safe_rows = []
+            for row in raw_report["rows"]:
+                monitor = self.db.get_monitor(row["monitor_id"]) if row.get("monitor_id") else None
+                safe_rows.append({**row, "monitor_name": sanitize(row["monitor_name"], monitor or {})})
+            report = filter_email_summary({**raw_report, "rows": safe_rows}, decoded_exclusions(delivery))
             values = {**report, "date": report["start_at"][:10], "status": "SUMMARY", "downtime": format_duration(report["downtime_seconds"])}
             default_body = self._summary_html(report)
         else:
@@ -100,6 +106,7 @@ class EmailNotifier:
                 "monitor_name": monitor["name"], "url": monitor["url"], "status": "UP" if result.ok else "DOWN",
                 "checked_at": result.checked_at, "error": result.error, "date": result.checked_at[:10],
                 "error_type": error_label(result.error_type), "monitor_count": 1,
+                "reason_code": result.reason_code, "phase": result.phase, "classification_state": result.classification_state,
             }
             default_body = self._monitor_html(delivery["kind"], monitor, result)
         subject = render_template(delivery["subject_template"], values).replace("\r", " ").replace("\n", " ")
@@ -112,7 +119,7 @@ class EmailNotifier:
         return subject, body
 
     def _batch_message(self, rule: dict[str, Any], members: list[dict[str, Any]]) -> tuple[str, str]:
-        payloads = [json.loads(member["payload_json"]) for member in members]
+        payloads = [self._safe_payload(json.loads(member["payload_json"])) for member in members]
         first = payloads[0]["result"]
         values = {
             "monitor_name": f"{len(payloads)} monitors", "monitor_count": len(payloads), "status": "DOWN",
@@ -125,17 +132,34 @@ class EmailNotifier:
             monitor, result = payload["monitor"], payload["result"]
             custom_values = {**values, **result, "status": "DOWN", "monitor_name": monitor["name"], "url": monitor["url"], "error_type": error_label(result.get("error_type", "unknown"))}
             custom = render_template(rule["body_template"], custom_values)
-            cells = [monitor["name"], monitor["monitor_type"], monitor["url"], error_label(result.get("error_type", "unknown")), result["checked_at"], result["error"]]
+            cells = [monitor["name"], monitor["monitor_type"], monitor["url"], error_label(result.get("error_type", "unknown")), result.get("reason_code", ""), result.get("phase", ""), result["checked_at"], result["error"]]
             if custom:
                 cells.append(custom)
             rows.append("<tr>" + "".join(f'<td style="padding:10px;border-bottom:1px solid #d8e0e5;vertical-align:top">{html.escape(str(value)).replace(chr(10), "<br>")}</td>' for value in cells) + "</tr>")
-        headings = ["Monitor", "Type", "URL", "Error category", "Checked at", "Error"]
+        headings = ["Monitor", "Type", "URL", "Error category", "Reason", "Phase", "Checked at", "Error"]
         if rule["body_template"]:
             headings.append("Message")
         table = '<table style="border-collapse:collapse;width:100%"><tr>' + "".join(f'<th style="text-align:left;padding:10px;background:#ecfdf5">{heading}</th>' for heading in headings) + "</tr>" + "".join(rows) + "</table>"
         if not rule["include_details"]:
             table = "".join(f"<h3>{html.escape(payload['monitor']['name'])}</h3><p>{html.escape(render_template(rule['body_template'], {**values, **payload['result'], 'monitor_name': payload['monitor']['name'], 'url': payload['monitor']['url']}))}</p>" for payload in payloads)
         return subject, f'<html><body style="font-family:Arial,sans-serif;color:#18252c;padding:24px"><h2>SiteSentry: {len(payloads)} monitors DOWN</h2>{table}</body></html>'
+
+    def _safe_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
+        if "monitor" not in payload:
+            return payload
+        item = dict(payload["monitor"])
+        monitor = self.db.get_monitor(item.get("id")) if item.get("id") else None
+        for key in ("name", "url", "language", "web_server"):
+            if key in item:
+                item[key] = sanitize(item[key], monitor or {})
+        result = dict(payload.get("result", {}))
+        if "classification_state" not in result:
+            result["error"] = "Legacy incident details withheld"
+        elif "error" in result:
+            result["error"] = sanitize(result["error"], monitor or {})
+        if "evidence" in result:
+            result["evidence"] = sanitize(result["evidence"], monitor or {})
+        return {**payload, "monitor": item, "result": result}
 
     def _summary_html(self, report: dict[str, Any]) -> str:
         rows = "".join(
@@ -236,6 +260,9 @@ class EmailNotifier:
         message["To"] = ", ".join(recipients)
         message.attach(MIMEText(html_body, "html", "utf-8"))
 
+        send_started = False
+        response_recorded = False
+        remaining: list[str] = []
         try:
             port = int(settings.get("smtp_port") or 587)
             with smtplib.SMTP(host, port, timeout=20) as smtp:
@@ -247,15 +274,22 @@ class EmailNotifier:
                 password = settings.get("smtp_password") or ""
                 if username:
                     smtp.login(username, password)
+                send_started = True
                 refused = smtp.sendmail(sender, recipients, message.as_string())
                 remaining = [recipient for recipient in recipients if recipient in refused]
                 if delivery_id is not None:
                     self.db.set_delivery_recipients(delivery_id, remaining)
+                response_recorded = True
                 if remaining:
                     return False, "SMTP refused some recipients; accepted recipients will not be resent"
             return True, "Email sent"
         except Exception as exc:
-            return False, f"{type(exc).__name__}: {exc}"
+            if response_recorded:
+                if remaining:
+                    return False, "SMTP refused some recipients; accepted recipients will not be resent"
+                return True, "Email sent"
+            uncertain = send_started and delivery_id is not None and not isinstance(exc, (smtplib.SMTPRecipientsRefused, smtplib.SMTPDataError))
+            return False, ("delivery_uncertain: " if uncertain else "") + f"{type(exc).__name__}: SMTP delivery failed"
 
     def _monitor_html(self, kind: str, monitor: dict[str, Any], result: CheckResult) -> str:
         status = "Recovered" if kind == "recovery" else "Incident detected"
@@ -273,6 +307,11 @@ class EmailNotifier:
             "Checked At": result.checked_at,
             "Error": result.error or "-",
             "Error category": error_label(result.error_type),
+            "Classification": result.classification_state or "confirmed",
+            "Reason code": result.reason_code or "-",
+            "Phase": result.phase or "-",
+            "Evidence source": result.evidence_source or "-",
+            "Evidence": json.dumps(result.evidence, ensure_ascii=False) if result.evidence else "-",
         }
         table = "".join(
             f"<tr><th>{html.escape(str(key))}</th><td>{html.escape(str(value))}</td></tr>"

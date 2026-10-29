@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from .database import Database
+from .privacy import sanitize
 
 
 def format_duration(seconds: float) -> str:
@@ -22,15 +23,17 @@ def build_report(db: Database, start: datetime, end: datetime, now: datetime | N
     rows: dict[tuple[str, Any], dict[str, Any]] = {}
     for monitor in monitors:
         rows[("id", monitor["id"])] = {
-            "monitor_id": monitor["id"], "monitor_name": monitor["name"],
+            "monitor_id": monitor["id"], "monitor_name": sanitize(monitor["name"], monitor),
             "language": monitor.get("language", ""), "web_server": monitor.get("web_server", ""),
             "down_count": 0, "incident_count": 0, "downtime_seconds": 0.0,
             "average_down_seconds": 0.0, "open_incidents": 0, "last_status": "unknown",
-            "last_error_type": "", "error_counts": {},
+            "last_error_type": "", "last_classification_state": "not_applicable", "last_reason_code": "", "last_phase": "", "error_counts": {}, "diagnostic_counts": {},
         }
     active: dict[tuple[str, Any], tuple[datetime, bool]] = {}
     incidents: list[dict[str, Any]] = []
     active_errors: dict[tuple[str, Any], set[str]] = {}
+    active_reasons: dict[tuple[str, Any], set[str]] = {}
+    active_states: dict[tuple[str, Any], set[str]] = {}
 
     def close_incident(key: tuple[str, Any], until: datetime, is_open: bool) -> None:
         began, carried = active.pop(key)
@@ -50,6 +53,8 @@ def build_report(db: Database, start: datetime, end: datetime, now: datetime | N
             "recovered_at": None if is_open else until.isoformat(timespec="seconds"),
             "duration_seconds": seconds, "carried_in": carried, "open": is_open,
             "error_types": sorted(active_errors.pop(key, set())),
+            "reason_codes": sorted(active_reasons.pop(key, set())),
+            "classification_states": sorted(active_states.pop(key, set())),
         })
 
     logs = db.report_logs(start.isoformat(timespec="seconds"), effective_end.isoformat(timespec="seconds")) if effective_end >= start else []
@@ -60,7 +65,7 @@ def build_report(db: Database, start: datetime, end: datetime, now: datetime | N
                 "monitor_id": log["monitor_id"], "monitor_name": log["monitor_name"], "language": "", "web_server": "",
                 "down_count": 0, "incident_count": 0, "downtime_seconds": 0.0,
                 "average_down_seconds": 0.0, "open_incidents": 0, "last_status": "unknown",
-                "last_error_type": "", "error_counts": {},
+                "last_error_type": "", "last_classification_state": "not_applicable", "last_reason_code": "", "last_phase": "", "error_counts": {}, "diagnostic_counts": {},
             }
         row = rows[key]
         checked_at = datetime.fromisoformat(log["checked_at"])
@@ -70,20 +75,31 @@ def build_report(db: Database, start: datetime, end: datetime, now: datetime | N
             if checked_at >= start:
                 row["down_count"] += 1
                 row["error_counts"][error_type] = row["error_counts"].get(error_type, 0) + 1
+                key_detail = (error_type, log.get("classification_state") or "legacy", log.get("reason_code") or "", log.get("phase") or "")
+                row["diagnostic_counts"][key_detail] = row["diagnostic_counts"].get(key_detail, 0) + 1
             if key not in active:
                 active[key] = (max(checked_at, start), checked_at < start)
                 active_errors[key] = set()
+                active_reasons[key] = set()
+                active_states[key] = set()
             active_errors[key].add(error_type)
+            if log.get("reason_code"):
+                active_reasons[key].add(log["reason_code"])
+            active_states[key].add(log.get("classification_state") or "legacy")
         elif state == "up" and key in active:
             close_incident(key, checked_at, False)
         if state in {"up", "down"}:
             row["last_status"] = state
             row["last_error_type"] = (log.get("error_type") or "unknown") if state == "down" else ""
+            row["last_classification_state"] = log.get("classification_state") or "legacy"
+            row["last_reason_code"] = log.get("reason_code") or ""
+            row["last_phase"] = log.get("phase") or ""
     for key in list(active):
         close_incident(key, effective_end, True)
     for row in rows.values():
         if row["incident_count"]:
             row["average_down_seconds"] = row["downtime_seconds"] / row["incident_count"]
+        row["diagnostic_counts"] = [{"error_type": code, "classification_state": state, "reason_code": reason, "phase": phase, "count": count} for (code, state, reason, phase), count in sorted(row["diagnostic_counts"].items())]
     values = sorted(rows.values(), key=lambda row: row["monitor_name"].casefold())
     current_ids = {monitor["id"] for monitor in monitors}
     current = [row for row in values if row["monitor_id"] in current_ids]
@@ -105,7 +121,8 @@ def build_report(db: Database, start: datetime, end: datetime, now: datetime | N
 
 def filter_email_summary(report: dict[str, Any], excluded: set[str]) -> dict[str, Any]:
     result = dict(report)
-    rows = [row for row in report["rows"] if not (row["last_status"] == "down" and row.get("last_error_type", "unknown") in excluded)]
+    excluded = excluded | {"unknown"}
+    rows = [row for row in report["rows"] if not (row["last_status"] == "down" and ((row.get("last_error_type") or "unknown") in excluded or row.get("last_classification_state", "confirmed") in {"undetermined", "legacy"}))]
     result["rows"] = rows
     result["excluded_monitor_count"] = len(report["rows"]) - len(rows)
     current = [row for row in rows if row["monitor_id"] is not None]

@@ -44,7 +44,7 @@ class ClassificationTests(unittest.TestCase):
 
     def test_network_down_requires_local_evidence(self):
         def handler(request):
-            raise httpx.ConnectError("no route", request=request) from OSError(errno.ENETUNREACH, "Network unreachable")
+            raise httpx.ConnectError("network down", request=request) from OSError(errno.ENETDOWN, "Network down")
         self.assertEqual(self.run_check(handler).error_type, "network_offline")
 
     def test_server_401_and_403_are_distinct(self):
@@ -118,7 +118,7 @@ class IncidentPolicyTests(unittest.TestCase):
         self.temp.cleanup()
 
     def record(self, monitor_id, category="timeout", ok=False):
-        result = CheckResult(ok, "up" if ok else "down", error_type="" if ok else category, error="test only")
+        result = CheckResult(ok, "up" if ok else "down", error_type="" if ok else category, error="test only", evidence_source="transport", evidence={"exception_kind": "SyntheticError"} if not ok and category != "unknown" else {})
         self.db.record_check_result(monitor_id, result)
 
     def test_exclusion_preserves_log_but_suppresses_down_and_recovery(self):

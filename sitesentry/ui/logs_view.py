@@ -11,6 +11,7 @@ from openpyxl.styles import Alignment, Font, PatternFill
 
 from .background import run_background
 from .datetime_picker import DateTimePicker
+from .focus import bind_focus_on_click
 from .theme import configure_table
 from sitesentry.core.diagnostics import ERROR_TYPES, error_label
 
@@ -18,6 +19,7 @@ from sitesentry.core.diagnostics import ERROR_TYPES, error_label
 EXPORT_FIELDS = [
     "id", "monitor_id", "monitor_name", "status", "ok", "response_ms",
     "status_code", "error_type", "error", "attempts", "checked_at", "detail_json",
+    "classification_state", "reason_code", "phase", "evidence_source", "evidence_json",
 ]
 
 
@@ -27,6 +29,7 @@ class LogsView(ctk.CTkFrame):
         self.app = app
         self._busy = False
         self._refresh_again = False
+        self._logs: dict[str, dict[str, Any]] = {}
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(1, weight=1)
         toolbar = ctk.CTkFrame(self, fg_color="transparent")
@@ -53,13 +56,21 @@ class LogsView(ctk.CTkFrame):
         self.error_filter = tk.StringVar(value="All errors")
         ctk.CTkOptionMenu(status_row, values=["All errors", *ERROR_TYPES.values()], variable=self.error_filter, command=lambda _: self.refresh(), width=280).pack(side="left", padx=12)
         ctk.CTkButton(status_row, text="Apply", command=self.refresh, width=80).pack(side="right")
+        detail_filters = ctk.CTkFrame(toolbar, fg_color="transparent")
+        detail_filters.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+        self.monitor_filter = tk.StringVar()
+        self.classification_filter = tk.StringVar(value="all")
+        self.phase_filter = tk.StringVar(value="all")
+        bind_focus_on_click(ctk.CTkEntry(detail_filters, textvariable=self.monitor_filter, placeholder_text="Monitor name", width=180)).pack(side="left", padx=(0, 8))
+        ctk.CTkOptionMenu(detail_filters, values=["all", "confirmed", "undetermined", "legacy", "not_applicable"], variable=self.classification_filter, width=155, command=lambda _: self.refresh()).pack(side="left", padx=(0, 8))
+        ctk.CTkOptionMenu(detail_filters, values=["all", "configuration", "resolve", "connect", "tls", "request", "login", "login_page", "login_submit", "verify", "response", "assertion", "network_probe"], variable=self.phase_filter, width=140, command=lambda _: self.refresh()).pack(side="left")
         table_frame = ctk.CTkFrame(self, fg_color="transparent")
         table_frame.grid(row=1, column=0, padx=20, pady=(8, 12), sticky="nsew")
         table_frame.grid_columnconfigure(0, weight=1)
         table_frame.grid_rowconfigure(0, weight=1)
-        columns = ("monitor_name", "status", "checked_at", "error_type", "response_ms", "status_code", "attempts", "error")
+        columns = ("monitor_name", "status", "checked_at", "error_type", "classification_state", "reason_code", "phase", "response_ms", "status_code", "attempts", "error")
         self.table = ttk.Treeview(table_frame, columns=columns, show="headings", style="SiteSentry.Logs.Treeview")
-        for column, title, width in zip(columns, ["Monitor", "Status", "Checked at", "Error category", "Time (ms)", "HTTP", "Attempts", "Error"], [220, 80, 175, 260, 100, 70, 80, 420]):
+        for column, title, width in zip(columns, ["Monitor", "Status", "Checked at", "Error category", "Classification", "Reason", "Phase", "Time (ms)", "HTTP", "Attempts", "Error"], [220, 80, 175, 260, 130, 160, 120, 100, 70, 80, 420]):
             self.table.heading(column, text=title)
             self.table.column(column, width=width, minwidth=60, anchor="w")
         dark = ctk.get_appearance_mode() == "Dark"
@@ -72,6 +83,7 @@ class LogsView(ctk.CTkFrame):
         horizontal.grid(row=1, column=0, sticky="ew")
         self.table.configure(yscrollcommand=vertical.set, xscrollcommand=horizontal.set)
         configure_table(self.table)
+        self.table.bind("<Double-1>", lambda _: self._show_details())
         self.summary_label = ctk.CTkLabel(self, text="", anchor="w")
         self.summary_label.grid(row=2, column=0, padx=20, pady=(0, 12), sticky="ew")
         self.refresh()
@@ -93,15 +105,17 @@ class LogsView(ctk.CTkFrame):
         self._busy = True
         status = self.status_filter.get()
         error_type = next((code for code, label in ERROR_TYPES.items() if label == self.error_filter.get()), None)
+        filters = {"classification_state": self.classification_filter.get(), "phase": self.phase_filter.get(), "monitor_name": self.monitor_filter.get().strip()}
 
         def done(logs: list[dict[str, Any]]) -> None:
             self._busy = False
             children = self.table.get_children()
             if children:
                 self.table.delete(*children)
+            self._logs = {str(item["id"]): item for item in logs}
             for index, item in enumerate(logs):
                 values = tuple(error_label(item.get(field, "")) if field == "error_type" else ("-" if item.get(field) is None else item.get(field, "")) for field in self.table["columns"])
-                self.table.insert("", "end", values=values, tags=(item["status"], "stripe") if index % 2 else (item["status"],))
+                self.table.insert("", "end", iid=str(item["id"]), values=values, tags=(item["status"], "stripe") if index % 2 else (item["status"],))
             self.summary_label.configure(text=f"Showing {len(logs)} latest log row(s)")
             if self._refresh_again:
                 self._refresh_again = False
@@ -111,7 +125,20 @@ class LogsView(ctk.CTkFrame):
             self._busy = False
             self.summary_label.configure(text=message)
 
-        run_background(self.app, self, lambda: self.app.db.list_logs(limit=500, status_filter=status, start_at=period[0], end_at=period[1], error_type=error_type), done, failed)
+        run_background(self.app, self, lambda: self.app.db.list_logs(limit=500, status_filter=status, start_at=period[0], end_at=period[1], error_type=error_type, **filters), done, failed)
+
+    def _show_details(self) -> None:
+        selected = self.table.selection()
+        if not selected or selected[0] not in self._logs:
+            return
+        item = self._logs[selected[0]]
+        dialog = ctk.CTkToplevel(self)
+        dialog.title("Diagnostic evidence")
+        dialog.geometry("680x440")
+        text = ctk.CTkTextbox(dialog, wrap="word")
+        text.pack(fill="both", expand=True, padx=16, pady=16)
+        text.insert("1.0", f"{item['monitor_name']}\n{item['classification_state']} | {item['error_type']} | {item['reason_code']}\nPhase: {item['phase']} | Source: {item['evidence_source']}\n\n{item['error']}\n\n{item['evidence_json']}")
+        text.configure(state="disabled")
 
     def _export(self, extension: str) -> None:
         period = self._date_range()
@@ -122,19 +149,26 @@ class LogsView(ctk.CTkFrame):
             return
         status = self.status_filter.get()
         error_type = next((code for code, label in ERROR_TYPES.items() if label == self.error_filter.get()), None)
+        filters = {"classification_state": self.classification_filter.get(), "phase": self.phase_filter.get(), "monitor_name": self.monitor_filter.get().strip()}
 
         def work() -> int:
-            logs = self.app.db.list_logs(limit=-1, status_filter=status, start_at=period[0], end_at=period[1], error_type=error_type)
+            logs = self.app.db.list_logs(limit=-1, status_filter=status, start_at=period[0], end_at=period[1], error_type=error_type, **filters)
             if extension == "xlsx":
                 self._write_excel(logs, path)
             else:
-                with open(path, "w", newline="", encoding="utf-8-sig") as stream:
-                    writer = csv.DictWriter(stream, fieldnames=EXPORT_FIELDS)
-                    writer.writeheader()
-                    writer.writerows(logs)
+                self._write_csv(logs, path)
             return len(logs)
 
         run_background(self.app, self, work, lambda count: messagebox.showinfo("Export logs", f"Exported {count} log row(s).", parent=self))
+
+    @staticmethod
+    def _write_csv(logs: list[dict[str, Any]], path: str) -> None:
+        with open(path, "w", newline="", encoding="utf-8-sig") as stream:
+            writer = csv.DictWriter(stream, fieldnames=EXPORT_FIELDS, extrasaction="ignore")
+            writer.writeheader()
+            for item in logs:
+                row = {key: ("'" + value if isinstance(value, str) and value.lstrip().startswith(("=", "+", "-", "@")) else value) for key, value in item.items()}
+                writer.writerow(row)
 
     @staticmethod
     def _write_excel(logs: list[dict[str, Any]], path: str) -> None:
@@ -149,7 +183,7 @@ class LogsView(ctk.CTkFrame):
             cell.font = Font(color="FFFFFF", bold=True)
         sheet.freeze_panes = "A2"
         sheet.auto_filter.ref = sheet.dimensions
-        for index, width in enumerate([8, 12, 28, 12, 8, 14, 14, 26, 50, 10, 24, 50], start=1):
+        for index, width in enumerate([8, 12, 28, 12, 8, 14, 14, 26, 50, 10, 24, 50, 20, 26, 20, 20, 60], start=1):
             sheet.column_dimensions[sheet.cell(1, index).column_letter].width = width
         for row in sheet:
             for cell in row:

@@ -17,7 +17,7 @@ class _VisibleText(HTMLParser):
         self.parts: list[str] = []
 
     def _flush(self) -> None:
-        text = " ".join("".join(self.parts).split()).casefold().rstrip(".! ")
+        text = " ".join("".join(self.parts).split())
         if text:
             self.lines.append(text)
         self.parts.clear()
@@ -54,7 +54,14 @@ def has_login_rejection(response_text: str) -> bool:
     parser.feed(response_text)
     parser.close()
     markers = {"invalid username or password", "incorrect username or password", "invalid credentials", "authentication failed", "sai tên đăng nhập", "sai mật khẩu", "tài khoản hoặc mật khẩu không đúng", "tên đăng nhập hoặc mật khẩu không đúng"}
-    return any(" ".join(line.split()) in markers for line in parser.lines)
+    return any(" ".join(line.split()).casefold().rstrip(".! ") in markers for line in parser.lines)
+
+
+def visible_text(response_text: str) -> str:
+    parser = _VisibleText()
+    parser.feed(response_text)
+    parser.close()
+    return " ".join(parser.lines)
 
 
 ERROR_TYPES = {
@@ -100,7 +107,7 @@ def exception_category(exc: Exception) -> str:
     if isinstance(exc, (ValueError, KeyError, httpx.InvalidURL, httpx.UnsupportedProtocol)):
         return "configuration_error"
     transport = isinstance(exc, (httpx.TransportError, OSError))
-    if transport and (any(getattr(item, "errno", None) in {errno.ENETDOWN, errno.ENETUNREACH, 10050, 10051} for item in chain) or not has_local_route()):
+    if transport and any(getattr(item, "errno", None) in {errno.ENETDOWN, 10050} for item in chain):
         return "network_offline"
     if isinstance(exc, httpx.TimeoutException):
         return "timeout"

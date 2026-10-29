@@ -46,14 +46,14 @@ class ReportsView(ctk.CTkFrame):
         ])]
         self.tabs = ctk.CTkTabview(self, corner_radius=6)
         self.tabs.grid(row=3, column=0, padx=20, pady=(0, 8), sticky="nsew")
-        self.table = self._table("Monitors", ("name", "checks", "incidents", "total", "average", "open", "status", "error", "language", "server"),
-            ["Monitor", "DOWN checks", "Incidents", "Total DOWN", "Average DOWN", "Open", "Status", "Error category", "Language", "Web server"],
-            [220, 110, 90, 120, 120, 64, 86, 250, 120, 140])
+        self.table = self._table("Monitors", ("name", "checks", "incidents", "total", "average", "open", "status", "error", "classification", "reason", "phase", "language", "server"),
+            ["Monitor", "DOWN checks", "Incidents", "Total DOWN", "Average DOWN", "Open", "Status", "Error category", "Classification", "Reason", "Phase", "Language", "Web server"],
+            [220, 110, 90, 120, 120, 64, 86, 250, 130, 150, 110, 120, 140])
         self.incident_table = self._table("Incidents", ("name", "start", "end", "recovered", "duration", "open", "error"),
             ["Monitor", "Counted from", "Counted until", "Recovered at", "Duration", "Open", "Error categories"],
             [220, 170, 170, 170, 120, 70, 360])
-        self.error_table = self._table("Error categories", ("name", "code", "category", "checks"),
-            ["Monitor", "Error code", "Error category", "DOWN checks"], [220, 190, 330, 120])
+        self.error_table = self._table("Error categories", ("name", "code", "category", "checks", "classification", "reason", "phase"),
+            ["Monitor", "Error code", "Error category", "DOWN checks", "Classification", "Reason", "Phase"], [220, 190, 330, 120, 130, 150, 110])
         self.summary = ctk.CTkLabel(self, text="", text_color=MUTED, anchor="w", wraplength=820, justify="left")
         self.summary.grid(row=4, column=0, padx=20, pady=(0, 16), sticky="ew")
         self.bind("<Configure>", lambda event: fit_wrap(self.summary, event.width - 40))
@@ -88,9 +88,9 @@ class ReportsView(ctk.CTkFrame):
             if children:
                 table.delete(*children)
         for index, row in enumerate(report["rows"]):
-            self.table.insert("", "end", values=(row["monitor_name"], row["down_count"], row["incident_count"], format_duration(row["downtime_seconds"]), format_duration(row["average_down_seconds"]), row["open_incidents"], row["last_status"].upper(), error_label(row["last_error_type"]), row["language"], row["web_server"]), tags=(row["last_status"], "stripe") if index % 2 else (row["last_status"],))
-            for code, count in row["error_counts"].items():
-                self.error_table.insert("", "end", values=(row["monitor_name"], code, error_label(code), count))
+            self.table.insert("", "end", values=(row["monitor_name"], row["down_count"], row["incident_count"], format_duration(row["downtime_seconds"]), format_duration(row["average_down_seconds"]), row["open_incidents"], row["last_status"].upper(), error_label(row["last_error_type"]), row["last_classification_state"], row["last_reason_code"], row["last_phase"], row["language"], row["web_server"]), tags=(row["last_status"], "stripe") if index % 2 else (row["last_status"],))
+            for detail in row["diagnostic_counts"]:
+                self.error_table.insert("", "end", values=(row["monitor_name"], detail["error_type"], error_label(detail["error_type"]), detail["count"], detail["classification_state"], detail["reason_code"], detail["phase"]))
         for index, incident in enumerate(report["incidents"]):
             self.incident_table.insert("", "end", values=(incident["monitor_name"], incident["counted_from"].replace("T", " "), incident["counted_until"].replace("T", " "), (incident["recovered_at"] or "-").replace("T", " "), format_duration(incident["duration_seconds"]), "Yes" if incident["open"] else "No", ", ".join(error_label(code) for code in incident["error_types"])), tags=("stripe",) if index % 2 else ())
         incidents = sum(row["incident_count"] for row in report["rows"])
