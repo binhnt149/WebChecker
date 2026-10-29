@@ -12,6 +12,7 @@ from openpyxl.styles import Alignment, Font, PatternFill
 from .background import run_background
 from .datetime_picker import DateTimePicker
 from .focus import bind_focus_on_click
+from .vi import CLASSIFICATIONS, PHASES, STATES, label, message as vi_message
 from .theme import configure_table
 from sitesentry.core.diagnostics import ERROR_TYPES, error_label
 
@@ -35,42 +36,43 @@ class LogsView(ctk.CTkFrame):
         toolbar = ctk.CTkFrame(self, fg_color="transparent")
         toolbar.grid(row=0, column=0, padx=20, pady=(18, 8), sticky="ew")
         toolbar.grid_columnconfigure(0, weight=1)
-        ctk.CTkLabel(toolbar, text="Logs", font=ctk.CTkFont(size=24, weight="bold")).grid(row=0, column=0, sticky="w")
+        ctk.CTkLabel(toolbar, text="Nhật ký", font=ctk.CTkFont(size=24, weight="bold")).grid(row=0, column=0, sticky="w")
         actions = ctk.CTkFrame(toolbar, fg_color="transparent")
         actions.grid(row=0, column=1, sticky="e")
-        ctk.CTkButton(actions, text="Export Excel", command=lambda: self._export("xlsx"), width=110).pack(side="left", padx=4)
-        ctk.CTkButton(actions, text="Export CSV", command=lambda: self._export("csv"), width=100, fg_color="#52525b").pack(side="left", padx=4)
-        ctk.CTkButton(actions, text="Clear", command=self._clear_logs, width=64, fg_color="#991b1b").pack(side="left", padx=(4, 0))
+        ctk.CTkButton(actions, text="Sự kiện mạng", command=self._show_network_events, width=105).pack(side="left", padx=4)
+        ctk.CTkButton(actions, text='Xuất Excel', command=lambda: self._export("xlsx"), width=110).pack(side="left", padx=4)
+        ctk.CTkButton(actions, text='Xuất CSV', command=lambda: self._export("csv"), width=100, fg_color="#52525b").pack(side="left", padx=4)
+        ctk.CTkButton(actions, text='Xóa', command=self._clear_logs, width=64, fg_color="#991b1b").pack(side="left", padx=(4, 0))
         filters = ctk.CTkFrame(toolbar, fg_color="transparent")
         filters.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(14, 0))
         filters.grid_columnconfigure((0, 1), weight=1)
-        self.start_picker = DateTimePicker(filters, "From")
+        self.start_picker = DateTimePicker(filters, 'Từ')
         self.start_picker.grid(row=0, column=0, padx=(0, 12), sticky="ew")
-        self.end_picker = DateTimePicker(filters, "To", end_of_day=True)
+        self.end_picker = DateTimePicker(filters, 'Đến', end_of_day=True)
         self.end_picker.grid(row=0, column=1, sticky="ew")
         status_row = ctk.CTkFrame(toolbar, fg_color="transparent")
         status_row.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(10, 0))
-        self.status_filter = tk.StringVar(value="all")
-        ctk.CTkLabel(status_row, text="Status").pack(side="left", padx=(0, 8))
-        ctk.CTkOptionMenu(status_row, values=["all", "up", "down"], variable=self.status_filter, command=lambda _: self.refresh(), width=100).pack(side="left")
-        self.error_filter = tk.StringVar(value="All errors")
-        ctk.CTkOptionMenu(status_row, values=["All errors", *ERROR_TYPES.values()], variable=self.error_filter, command=lambda _: self.refresh(), width=280).pack(side="left", padx=12)
-        ctk.CTkButton(status_row, text="Apply", command=self.refresh, width=80).pack(side="right")
+        self.status_filter = tk.StringVar(value="Tất cả")
+        ctk.CTkLabel(status_row, text='Trạng thái').pack(side="left", padx=(0, 8))
+        ctk.CTkOptionMenu(status_row, values=["Tất cả", "UP", "DOWN"], variable=self.status_filter, command=lambda _: self.refresh(), width=100).pack(side="left")
+        self.error_filter = tk.StringVar(value='Mọi nhóm lỗi')
+        ctk.CTkOptionMenu(status_row, values=['Mọi nhóm lỗi', *ERROR_TYPES.values()], variable=self.error_filter, command=lambda _: self.refresh(), width=280).pack(side="left", padx=12)
+        ctk.CTkButton(status_row, text='Áp dụng', command=self.refresh, width=80).pack(side="right")
         detail_filters = ctk.CTkFrame(toolbar, fg_color="transparent")
         detail_filters.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(8, 0))
         self.monitor_filter = tk.StringVar()
-        self.classification_filter = tk.StringVar(value="all")
-        self.phase_filter = tk.StringVar(value="all")
-        bind_focus_on_click(ctk.CTkEntry(detail_filters, textvariable=self.monitor_filter, placeholder_text="Monitor name", width=180)).pack(side="left", padx=(0, 8))
-        ctk.CTkOptionMenu(detail_filters, values=["all", "confirmed", "undetermined", "legacy", "not_applicable"], variable=self.classification_filter, width=155, command=lambda _: self.refresh()).pack(side="left", padx=(0, 8))
-        ctk.CTkOptionMenu(detail_filters, values=["all", "configuration", "resolve", "connect", "tls", "request", "login", "login_page", "login_submit", "verify", "response", "assertion", "network_probe"], variable=self.phase_filter, width=140, command=lambda _: self.refresh()).pack(side="left")
+        self.classification_filter = tk.StringVar(value="Tất cả")
+        self.phase_filter = tk.StringVar(value="Tất cả")
+        bind_focus_on_click(ctk.CTkEntry(detail_filters, textvariable=self.monitor_filter, placeholder_text='Tên monitor', width=180)).pack(side="left", padx=(0, 8))
+        ctk.CTkOptionMenu(detail_filters, values=["Tất cả", *CLASSIFICATIONS.values()], variable=self.classification_filter, width=155, command=lambda _: self.refresh()).pack(side="left", padx=(0, 8))
+        ctk.CTkOptionMenu(detail_filters, values=["Tất cả", *PHASES.values()], variable=self.phase_filter, width=150, command=lambda _: self.refresh()).pack(side="left")
         table_frame = ctk.CTkFrame(self, fg_color="transparent")
         table_frame.grid(row=1, column=0, padx=20, pady=(8, 12), sticky="nsew")
         table_frame.grid_columnconfigure(0, weight=1)
         table_frame.grid_rowconfigure(0, weight=1)
         columns = ("monitor_name", "status", "checked_at", "error_type", "classification_state", "reason_code", "phase", "response_ms", "status_code", "attempts", "error")
         self.table = ttk.Treeview(table_frame, columns=columns, show="headings", style="SiteSentry.Logs.Treeview")
-        for column, title, width in zip(columns, ["Monitor", "Status", "Checked at", "Error category", "Classification", "Reason", "Phase", "Time (ms)", "HTTP", "Attempts", "Error"], [220, 80, 175, 260, 130, 160, 120, 100, 70, 80, 420]):
+        for column, title, width in zip(columns, ['Monitor', 'Trạng thái', 'Thời điểm kiểm tra', 'Nhóm lỗi', 'Phân loại', 'Mã lý do', 'Giai đoạn', 'Thời gian (ms)', "HTTP", 'Số lần thử', 'Lỗi'], [220, 80, 175, 260, 130, 160, 120, 100, 70, 80, 420]):
             self.table.heading(column, text=title)
             self.table.column(column, width=width, minwidth=60, anchor="w")
         dark = ctk.get_appearance_mode() == "Dark"
@@ -88,10 +90,31 @@ class LogsView(ctk.CTkFrame):
         self.summary_label.grid(row=2, column=0, padx=20, pady=(0, 12), sticky="ew")
         self.refresh()
 
+    def _show_network_events(self) -> None:
+        dialog = ctk.CTkToplevel(self)
+        dialog.title("Sự kiện kết nối Internet")
+        dialog.geometry("740x440")
+        dialog.transient(self.winfo_toplevel())
+        dialog.grid_columnconfigure(0, weight=1)
+        dialog.grid_rowconfigure(1, weight=1)
+        ctk.CTkLabel(dialog, text="Điểm tham chiếu không phản hồi không đủ để kết luận toàn bộ Internet bị mất.", wraplength=680, justify="left").grid(row=0, column=0, padx=12, pady=12, sticky="w")
+        frame = ctk.CTkFrame(dialog, fg_color="transparent")
+        frame.grid(row=1, column=0, padx=12, pady=4, sticky="nsew")
+        from .theme import table_scrollers
+        table = ttk.Treeview(frame, columns=("time", "profile", "state"), show="headings")
+        for key, title, width in [("time", "Thời điểm", 180), ("profile", "Profile", 200), ("state", "Phân loại sự kiện", 320)]:
+            table.heading(key, text=title)
+            table.column(key, width=width)
+        table_scrollers(frame, table)
+        for event in self.app.db.list_network_events():
+            label = {"reachable": "Điểm tham chiếu phản hồi", "reference_unreachable": "Điểm tham chiếu không phản hồi", "network_offline": "Mạng máy giám sát không khả dụng"}.get(event["state"], "Chưa xác định")
+            table.insert("", "end", values=(event["checked_at"].replace("T", " "), event["profile"], label))
+        ctk.CTkButton(dialog, text="Đóng", command=dialog.destroy).grid(row=2, column=0, padx=12, pady=12, sticky="e")
+
     def _date_range(self) -> tuple[str | None, str | None] | None:
         start, end = self.start_picker.get(), self.end_picker.get()
         if start and end and start > end:
-            messagebox.showerror("Log date filter", "From must be before To.", parent=self)
+            messagebox.showerror('Bộ lọc thời gian', 'Thời điểm bắt đầu phải trước thời điểm kết thúc.', parent=self)
             return None
         return start.isoformat(timespec="seconds") if start else None, end.isoformat(timespec="seconds") if end else None
 
@@ -103,9 +126,9 @@ class LogsView(ctk.CTkFrame):
         if period is None:
             return
         self._busy = True
-        status = self.status_filter.get()
+        status = self.status_filter.get().lower() if self.status_filter.get() != "Tất cả" else "all"
         error_type = next((code for code, label in ERROR_TYPES.items() if label == self.error_filter.get()), None)
-        filters = {"classification_state": self.classification_filter.get(), "phase": self.phase_filter.get(), "monitor_name": self.monitor_filter.get().strip()}
+        filters = {"classification_state": next((key for key, value in CLASSIFICATIONS.items() if value == self.classification_filter.get()), "all"), "phase": next((key for key, value in PHASES.items() if value == self.phase_filter.get()), "all"), "monitor_name": self.monitor_filter.get().strip()}
 
         def done(logs: list[dict[str, Any]]) -> None:
             self._busy = False
@@ -114,9 +137,10 @@ class LogsView(ctk.CTkFrame):
                 self.table.delete(*children)
             self._logs = {str(item["id"]): item for item in logs}
             for index, item in enumerate(logs):
-                values = tuple(error_label(item.get(field, "")) if field == "error_type" else ("-" if item.get(field) is None else item.get(field, "")) for field in self.table["columns"])
+                maps = {"classification_state": CLASSIFICATIONS, "phase": PHASES, "status": STATES}
+                values = tuple(error_label(item.get(field, "")) if field == "error_type" else label(maps[field], item.get(field, "")) if field in maps else vi_message(item.get(field, "")) if field == "error" else ("-" if item.get(field) is None else item.get(field, "")) for field in self.table["columns"])
                 self.table.insert("", "end", iid=str(item["id"]), values=values, tags=(item["status"], "stripe") if index % 2 else (item["status"],))
-            self.summary_label.configure(text=f"Showing {len(logs)} latest log row(s)")
+            self.summary_label.configure(text=f"Hiển thị {len(logs)} dòng nhật ký gần nhất")
             if self._refresh_again:
                 self._refresh_again = False
                 self.refresh()
@@ -133,23 +157,23 @@ class LogsView(ctk.CTkFrame):
             return
         item = self._logs[selected[0]]
         dialog = ctk.CTkToplevel(self)
-        dialog.title("Diagnostic evidence")
+        dialog.title('Bằng chứng chẩn đoán')
         dialog.geometry("680x440")
         text = ctk.CTkTextbox(dialog, wrap="word")
         text.pack(fill="both", expand=True, padx=16, pady=16)
-        text.insert("1.0", f"{item['monitor_name']}\n{item['classification_state']} | {item['error_type']} | {item['reason_code']}\nPhase: {item['phase']} | Source: {item['evidence_source']}\n\n{item['error']}\n\n{item['evidence_json']}")
+        text.insert("1.0", f"{item['monitor_name']}\n{label(CLASSIFICATIONS, item['classification_state'])} | {error_label(item['error_type'])} | {item['reason_code']}\nGiai đoạn: {label(PHASES, item['phase'])} | Nguồn: {item['evidence_source']}\n\n{item['error']}\n\n{item['evidence_json']}")
         text.configure(state="disabled")
 
     def _export(self, extension: str) -> None:
         period = self._date_range()
         if period is None:
             return
-        path = filedialog.asksaveasfilename(parent=self, title="Export logs", initialfile=self._default_export_name(extension), defaultextension=f".{extension}", filetypes=[("Excel workbook" if extension == "xlsx" else "CSV files", f"*.{extension}")])
+        path = filedialog.asksaveasfilename(parent=self, title='Xuất nhật ký', initialfile=self._default_export_name(extension), defaultextension=f".{extension}", filetypes=[('Tệp Excel' if extension == "xlsx" else "CSV files", f"*.{extension}")])
         if not path:
             return
-        status = self.status_filter.get()
+        status = self.status_filter.get().lower() if self.status_filter.get() != "Tất cả" else "all"
         error_type = next((code for code, label in ERROR_TYPES.items() if label == self.error_filter.get()), None)
-        filters = {"classification_state": self.classification_filter.get(), "phase": self.phase_filter.get(), "monitor_name": self.monitor_filter.get().strip()}
+        filters = {"classification_state": next((key for key, value in CLASSIFICATIONS.items() if value == self.classification_filter.get()), "all"), "phase": next((key for key, value in PHASES.items() if value == self.phase_filter.get()), "all"), "monitor_name": self.monitor_filter.get().strip()}
 
         def work() -> int:
             logs = self.app.db.list_logs(limit=-1, status_filter=status, start_at=period[0], end_at=period[1], error_type=error_type, **filters)
@@ -159,7 +183,7 @@ class LogsView(ctk.CTkFrame):
                 self._write_csv(logs, path)
             return len(logs)
 
-        run_background(self.app, self, work, lambda count: messagebox.showinfo("Export logs", f"Exported {count} log row(s).", parent=self))
+        run_background(self.app, self, work, lambda count: messagebox.showinfo('Xuất nhật ký', f"Đã xuất {count} dòng nhật ký.", parent=self))
 
     @staticmethod
     def _write_csv(logs: list[dict[str, Any]], path: str) -> None:
@@ -197,6 +221,6 @@ class LogsView(ctk.CTkFrame):
         return f"sitesentry_logs_{values[0]}_{values[1]}.{extension}"
 
     def _clear_logs(self) -> None:
-        if messagebox.askyesno("Clear logs", "Delete all log rows? Statistics based on these logs will also be lost.", parent=self):
+        if messagebox.askyesno('Xóa nhật ký', 'Xóa toàn bộ nhật ký? Dữ liệu thống kê dựa trên nhật ký này cũng bị xóa.', parent=self):
             self.app.db.clear_logs()
             self.refresh()

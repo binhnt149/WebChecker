@@ -34,6 +34,17 @@ Các tính năng chính:
 
 ## Giao diện và phân loại sự cố
 
+Các màn hình, chức năng và thông báo chính dùng tiếng Việt; các mã kỹ thuật như `UP`, `DOWN`, HTTP, JSON, `reason_code` và tên trường import vẫn giữ nguyên để tương thích dữ liệu cũ.
+
+### Kiểm tra kết nối Internet trước monitor
+
+1. Vào **Cài đặt > Internet > Quản lý profile mạng**, tạo profile phạm vi **Internet**, bật profile và nhập một hoặc hai URL tham chiếu tin cậy. Chọn phương thức `HEAD`/`GET` và thời gian chờ cho từng địa chỉ.
+2. Chọn profile vừa tạo trong tab **Internet** và bấm **Lưu**. Trước mỗi lượt kiểm tra monitor, app kiểm tra profile này; kết quả được dùng chung trong tối đa 60 giây. Chưa chọn profile thì app không tự gọi địa chỉ Internet bên ngoài.
+3. **Tổng quan** hiển thị kết quả và thời điểm gần nhất; vào **Nhật ký > Sự kiện mạng** để xem các lần trạng thái thay đổi. Nếu hệ điều hành báo mạng cục bộ không khả dụng, sự kiện được phân loại tương ứng. Nếu điểm tham chiếu không trả lời nhưng chưa đủ bằng chứng mất mạng, sự kiện ghi rõ điểm tham chiếu không phản hồi.
+4. Các monitor, kể cả hệ thống nội bộ/VPN, vẫn được kiểm tra bình thường. Sự kiện mạng là nhật ký riêng và không tự tạo email cảnh báo; email sự cố monitor vẫn tuân theo quy tắc phân loại và bộ lọc đã cấu hình. Test Run không ghi sự kiện mạng.
+
+Biểu đồ **Tình hình hoạt động hiện tại** trên Tổng quan đếm monitor đang UP, DOWN, chưa rõ và tạm dừng; monitor tạm dừng chỉ được đếm một lần ở nhóm tạm dừng. Đây là ảnh chụp trạng thái gần nhất, không phải tỷ lệ sẵn sàng theo lịch sử.
+
 Dashboard dùng bảng monitor với tìm kiếm theo tên/URL/lỗi, bộ lọc loại monitor và trạng thái. Chọn một dòng để Run, Edit, Pause/Enable hoặc Delete; nhấp đúp để sửa. Khi cập nhật kết quả, app giữ dòng đang chọn. Truy vấn, import, test monitor và xuất file chạy nền, trả kết quả qua queue của luồng giao diện.
 
 Giao diện dùng nền trung tính Light/Dark, màu teal cho thao tác chính, xanh lá cho UP, đỏ cho DOWN và màu cảnh báo riêng. Sidebar đánh dấu màn hình đang mở. Các form dài có vùng cuộn, nút Save/Cancel luôn nằm ngoài vùng cuộn.

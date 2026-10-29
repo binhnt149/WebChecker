@@ -65,17 +65,17 @@ def visible_text(response_text: str) -> str:
 
 
 ERROR_TYPES = {
-    "auth_credentials": "Authentication rejected",
-    "auth_verification": "Login / session verification",
-    "timeout": "Website not responding",
-    "target_unreachable": "Server connection failed",
-    "network_offline": "Monitoring device network unavailable",
-    "dns_error": "Address / DNS resolution failed",
-    "tls_error": "TLS / certificate error",
-    "http_error": "Unexpected HTTP status",
-    "assertion_failed": "Content / API assertion failed",
-    "configuration_error": "Invalid monitor configuration",
-    "unknown": "Unclassified error",
+    "auth_credentials": "Xác thực bị từ chối",
+    "auth_verification": "Không xác minh được phiên đăng nhập",
+    "timeout": "Hết thời gian chờ",
+    "target_unreachable": "Không kết nối được máy chủ",
+    "network_offline": "Mạng máy giám sát không khả dụng",
+    "dns_error": "Không phân giải được địa chỉ DNS",
+    "tls_error": "Lỗi TLS hoặc chứng chỉ",
+    "http_error": "Mã HTTP không như mong đợi",
+    "assertion_failed": "Nội dung hoặc API không đạt điều kiện",
+    "configuration_error": "Cấu hình monitor không hợp lệ",
+    "unknown": "Lỗi chưa được phân loại",
 }
 
 

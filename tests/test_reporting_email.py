@@ -118,9 +118,9 @@ class EmailTests(DatabaseCase):
         report = build_report(self.db, datetime(2026, 10, 20), datetime(2026, 10, 20, 2))
         self.db.queue_summary(rule_id, "qa", report)
         subject, body = EmailNotifier(self.db)._rule_message(self.db.pending_email_deliveries()[0])
-        self.assertEqual(subject, "[SiteSentry] Daily summary 2026-10-20")
+        self.assertEqual(subject, "[SiteSentry] Tổng hợp 2026-10-20")
         self.assertIn("2026-10-20: 1 / 1 / 01:00:00", body)
-        self.assertIn("Total: 1 | UP: 0 | DOWN: 1 | Unknown: 0", body)
+        self.assertIn("Tổng: 1 | UP: 0 | DOWN: 1 | Chưa rõ: 0", body)
 
     def test_recovery_only_and_multiple_rules(self) -> None:
         recovery = self.db.save_email_rule({"name": "Recovery", "rule_type": "recovery_only", "recipients": "ops@example.test"})

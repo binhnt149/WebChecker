@@ -9,9 +9,9 @@ from .diagnostics import decoded_exclusions
 
 
 RULE_TYPES = {
-    "incident": "DOWN and recovery",
-    "recovery_only": "Recovery only",
-    "daily_summary": "Daily summary",
+    "incident": "Cảnh báo DOWN và phục hồi",
+    "recovery_only": "Chỉ thông báo phục hồi",
+    "daily_summary": "Tổng hợp theo lịch",
 }
 WEEKDAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
 TEMPLATE_FIELDS = {
@@ -66,7 +66,7 @@ def normalize_rule(data: dict[str, Any]) -> dict[str, Any]:
         parse_recipients(recipients)
     subject = str(data.get("subject_template") or "").strip()
     if not subject:
-        subject = "[SiteSentry] Daily summary {date}" if kind == "daily_summary" else "[SiteSentry] {status}: {monitor_name}"
+        subject = "[SiteSentry] Tổng hợp {date}" if kind == "daily_summary" else "[SiteSentry] {status}: {monitor_name}"
     if "\n" in subject or "\r" in subject:
         raise ValueError("Subject must be a single line")
     body = str(data.get("body_template") or "")

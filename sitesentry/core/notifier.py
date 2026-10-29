@@ -17,6 +17,7 @@ from .email_rules import parse_recipients, render_template
 from .reports import filter_email_summary, format_duration
 from .diagnostics import decoded_exclusions, error_label
 from .privacy import sanitize
+from .translation import message as vi_message
 
 
 class EmailNotifier:
@@ -104,7 +105,7 @@ class EmailNotifier:
             result = CheckResult(**payload["result"])
             values = {
                 "monitor_name": monitor["name"], "url": monitor["url"], "status": "UP" if result.ok else "DOWN",
-                "checked_at": result.checked_at, "error": result.error, "date": result.checked_at[:10],
+                "checked_at": result.checked_at, "error": vi_message(result.error), "date": result.checked_at[:10],
                 "error_type": error_label(result.error_type), "monitor_count": 1,
                 "reason_code": result.reason_code, "phase": result.phase, "classification_state": result.classification_state,
             }
@@ -130,19 +131,19 @@ class EmailNotifier:
         rows = []
         for payload in payloads:
             monitor, result = payload["monitor"], payload["result"]
-            custom_values = {**values, **result, "status": "DOWN", "monitor_name": monitor["name"], "url": monitor["url"], "error_type": error_label(result.get("error_type", "unknown"))}
+            custom_values = {**values, **result, "status": "DOWN", "monitor_name": monitor["name"], "url": monitor["url"], "error_type": error_label(result.get("error_type", "unknown")), "error": vi_message(result.get("error", ""))}
             custom = render_template(rule["body_template"], custom_values)
-            cells = [monitor["name"], monitor["monitor_type"], monitor["url"], error_label(result.get("error_type", "unknown")), result.get("reason_code", ""), result.get("phase", ""), result["checked_at"], result["error"]]
+            cells = [monitor["name"], monitor["monitor_type"], monitor["url"], error_label(result.get("error_type", "unknown")), result.get("reason_code", ""), result.get("phase", ""), result["checked_at"], vi_message(result["error"])]
             if custom:
                 cells.append(custom)
             rows.append("<tr>" + "".join(f'<td style="padding:10px;border-bottom:1px solid #d8e0e5;vertical-align:top">{html.escape(str(value)).replace(chr(10), "<br>")}</td>' for value in cells) + "</tr>")
-        headings = ["Monitor", "Type", "URL", "Error category", "Reason", "Phase", "Checked at", "Error"]
+        headings = ["Monitor", "Loại", "URL", "Nhóm lỗi", "Mã lý do", "Giai đoạn", "Thời điểm kiểm tra", "Lỗi"]
         if rule["body_template"]:
-            headings.append("Message")
+            headings.append("Nội dung")
         table = '<table style="border-collapse:collapse;width:100%"><tr>' + "".join(f'<th style="text-align:left;padding:10px;background:#ecfdf5">{heading}</th>' for heading in headings) + "</tr>" + "".join(rows) + "</table>"
         if not rule["include_details"]:
             table = "".join(f"<h3>{html.escape(payload['monitor']['name'])}</h3><p>{html.escape(render_template(rule['body_template'], {**values, **payload['result'], 'monitor_name': payload['monitor']['name'], 'url': payload['monitor']['url']}))}</p>" for payload in payloads)
-        return subject, f'<html><body style="font-family:Arial,sans-serif;color:#18252c;padding:24px"><h2>SiteSentry: {len(payloads)} monitors DOWN</h2>{table}</body></html>'
+        return subject, f'<html><body style="font-family:Arial,sans-serif;color:#18252c;padding:24px"><h2>SiteSentry: {len(payloads)} monitor gặp sự cố DOWN</h2>{table}</body></html>'
 
     def _safe_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
         if "monitor" not in payload:
@@ -170,12 +171,12 @@ class EmailNotifier:
             for row in report["rows"]
         )
         return f'''<html><body style="font-family:Arial,sans-serif;color:#1f2937;padding:24px">
-        <h2>SiteSentry daily dashboard: {html.escape(report['start_at'][:10])}</h2>
-        <p>Total: {report['total']} | UP: {report['up']} | DOWN: {report['down']} | Unknown: {report['unknown']}</p>
-        <p>From {html.escape(report['start_at'])} to {html.escape(report['as_of'])}</p>
-        <p>Currently DOWN monitors excluded by this rule: {report.get('excluded_monitor_count', 0)}</p>
+        <h2>SiteSentry tổng hợp hằng ngày: {html.escape(report['start_at'][:10])}</h2>
+        <p>Tổng: {report['total']} | UP: {report['up']} | DOWN: {report['down']} | Chưa rõ: {report['unknown']}</p>
+        <p>Từ {html.escape(report['start_at'])} đến {html.escape(report['as_of'])}</p>
+        <p>Monitor đang DOWN bị loại theo quy tắc này: {report.get('excluded_monitor_count', 0)}</p>
         <table style="border-collapse:collapse;width:100%"><thead><tr>
-        <th>Monitor</th><th>Status</th><th>DOWN checks</th><th>Incidents</th><th>Total DOWN</th><th>Average DOWN</th>
+        <th>Monitor</th><th>Trạng thái</th><th>Lần kiểm tra DOWN</th><th>Sự cố</th><th>Tổng thời gian DOWN</th><th>DOWN trung bình</th>
         </tr></thead><tbody>{rows}</tbody></table></body></html>'''
 
     def settings(self) -> dict[str, str]:
@@ -222,11 +223,11 @@ class EmailNotifier:
     def send_test_email(self, recipient_override: str | None = None) -> tuple[bool, str]:
         body = """
         <html><body style="font-family:Arial,sans-serif">
-        <h2>SiteSentry Desktop test email</h2>
-        <p>Your SMTP configuration is working.</p>
+        <h2>Email kiểm tra SiteSentry Desktop</h2>
+        <p>Cấu hình SMTP của bạn đang hoạt động.</p>
         </body></html>
         """
-        return self._send("[SiteSentry] Test email", body, recipient_override=recipient_override)
+        return self._send("[SiteSentry] Email kiểm tra", body, recipient_override=recipient_override)
 
     def _send(
         self,
@@ -292,26 +293,26 @@ class EmailNotifier:
             return False, ("delivery_uncertain: " if uncertain else "") + f"{type(exc).__name__}: SMTP delivery failed"
 
     def _monitor_html(self, kind: str, monitor: dict[str, Any], result: CheckResult) -> str:
-        status = "Recovered" if kind == "recovery" else "Incident detected"
+        status = "Đã phục hồi" if kind == "recovery" else "Phát hiện sự cố"
         accent = "#16a34a" if kind == "recovery" else "#dc2626"
         rows = {
             "Monitor": monitor.get("name", ""),
-            "Type": monitor.get("monitor_type", ""),
-            "Language": monitor.get("language", ""),
-            "Web server": monitor.get("web_server", ""),
+            "Loại": monitor.get("monitor_type", ""),
+            "Ngôn ngữ": monitor.get("language", ""),
+            "Máy chủ web": monitor.get("web_server", ""),
             "URL": monitor.get("url", ""),
-            "Status": result.status.upper(),
-            "HTTP Status": result.status_code if result.status_code is not None else "-",
-            "Response Time": f"{result.response_ms} ms" if result.response_ms is not None else "-",
-            "Attempts": result.attempts,
-            "Checked At": result.checked_at,
-            "Error": result.error or "-",
-            "Error category": error_label(result.error_type),
-            "Classification": result.classification_state or "confirmed",
-            "Reason code": result.reason_code or "-",
-            "Phase": result.phase or "-",
-            "Evidence source": result.evidence_source or "-",
-            "Evidence": json.dumps(result.evidence, ensure_ascii=False) if result.evidence else "-",
+            "Trạng thái": result.status.upper(),
+            "Mã HTTP": result.status_code if result.status_code is not None else "-",
+            "Thời gian phản hồi": f"{result.response_ms} ms" if result.response_ms is not None else "-",
+            "Số lần thử": result.attempts,
+            "Thời điểm kiểm tra": result.checked_at,
+            "Lỗi": vi_message(result.error) if result.error else "-",
+            "Nhóm lỗi": error_label(result.error_type),
+            "Phân loại": result.classification_state or "confirmed",
+            "Mã lý do": result.reason_code or "-",
+            "Giai đoạn": result.phase or "-",
+            "Nguồn bằng chứng": result.evidence_source or "-",
+            "Bằng chứng": json.dumps(result.evidence, ensure_ascii=False) if result.evidence else "-",
         }
         table = "".join(
             f"<tr><th>{html.escape(str(key))}</th><td>{html.escape(str(value))}</td></tr>"

@@ -16,11 +16,11 @@ MIN_PYTHON = (3, 10)
 def _runtime_error_message() -> str:
     current = f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
     return (
-        "SiteSentry Desktop requires Python 3.10 or newer.\n\n"
-        f"Current runtime: Python {current}\n"
-        "The Apple CommandLineTools Python 3.9 runtime can open a Tk window but does not "
-        "render CustomTkinter controls correctly on this machine, which results in a blank app window.\n\n"
-        "Install Python 3.10+ from python.org or another framework build, then run:\n"
+        "SiteSentry Desktop yêu cầu Python 3.10 trở lên.\n\n"
+        f"Phiên bản hiện tại: Python {current}\n"
+        "Python 3.9 của Apple CommandLineTools có thể mở cửa sổ Tk nhưng không hiển thị đúng "
+        "các điều khiển CustomTkinter trên máy này.\n\n"
+        "Cài Python 3.10+ từ python.org hoặc bản framework khác, sau đó chạy:\n"
         "python3.10 -m pip install -r requirements.txt\n"
         "python3.10 main.py"
     )
@@ -36,7 +36,7 @@ def ensure_supported_runtime() -> None:
         try:
             root = tk.Tk()
             root.withdraw()
-            messagebox.showerror("SiteSentry Desktop runtime", message)
+            messagebox.showerror("Phiên bản Python không hỗ trợ", message)
             root.destroy()
         except tk.TclError:
             pass

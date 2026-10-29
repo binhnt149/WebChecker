@@ -17,7 +17,11 @@ def _has_classified_evidence(result: dict[str, Any]) -> bool:
     category = result.get("error_type")
     if not category or category == "unknown" or result.get("classification_state") == "undetermined":
         return False
-    if result.get("classification_state") == "confirmed" and result.get("evidence"):
+    evidence = result.get("evidence") or {}
+    if not isinstance(evidence, dict):
+        evidence = {}
+    direct_evidence = {key: value for key, value in evidence.items() if key not in {"internet_check", "network_probe"}}
+    if result.get("classification_state") == "confirmed" and direct_evidence:
         return True
     status = result.get("status_code")
     return type(status) is int and ((category == "auth_credentials" and status == 401) or (category == "http_error" and 400 <= status <= 599))
@@ -205,18 +209,29 @@ class NotificationStore:
                 return False
             monitor = dict(row)
             decoded_monitor = self._monitor_row_to_dict(row)
-            if not result.ok and result.classification_state == "confirmed" and not result.evidence:
+            direct_evidence = {key: value for key, value in result.evidence.items() if key not in {"internet_check", "network_probe"}}
+            if not result.ok and result.classification_state == "confirmed" and not direct_evidence:
                 if result.status_code is not None and result.error_type in {"http_error", "auth_credentials"}:
-                    result.evidence = {"status_code": result.status_code, "expected_status": monitor["expected_status"]}
+                    result.evidence.update({"status_code": result.status_code, "expected_status": monitor["expected_status"]})
                     result.evidence_source = result.evidence_source or "http"
                 elif result.details.get("exception_kind"):
-                    result.evidence = {"exception_kind": result.details["exception_kind"]}
+                    result.evidence.update({"exception_kind": result.details["exception_kind"]})
                     result.evidence_source = result.evidence_source or "transport"
                 else:
                     result.classification_state = "undetermined"
             if not result.ok and result.classification_state != "confirmed":
                 result.error_type = "unknown"
             sanitize_result(result, decoded_monitor)
+            internet_check = result.evidence.get("internet_check")
+            if isinstance(internet_check, dict) and internet_check.get("state") in {"reachable", "reference_unreachable", "network_offline"}:
+                profile_name = internet_check.get("profile", "")
+                latest = self._conn.execute("SELECT id, profile, state, last_seen_at FROM network_events ORDER BY id DESC LIMIT 1").fetchone()
+                checked_at = internet_check.get("checked_at") or result.checked_at
+                if not latest or (latest["profile"], latest["state"]) != (profile_name, internet_check["state"]):
+                    if not latest or checked_at >= latest["last_seen_at"]:
+                        self._conn.execute("INSERT INTO network_events (profile, state, checked_at, last_seen_at, evidence_json) VALUES (?, ?, ?, ?, ?)", (profile_name, internet_check["state"], checked_at, checked_at, json.dumps(internet_check, ensure_ascii=False)))
+                elif checked_at > latest["last_seen_at"]:
+                    self._conn.execute("UPDATE network_events SET last_seen_at = ? WHERE id = ?", (checked_at, latest["id"]))
             cursor = self._conn.execute(
                 """INSERT INTO logs (monitor_id, monitor_name, status, ok, response_ms, status_code,
                     error, attempts, checked_at, detail_json, error_type, classification_state, reason_code, phase, evidence_source, evidence_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",

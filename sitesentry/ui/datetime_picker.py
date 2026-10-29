@@ -26,7 +26,7 @@ class DateTimePicker(ctk.CTkFrame):
 
     def set(self, value: datetime | None) -> None:
         self.value = value
-        self.button.configure(text=value.strftime("%Y-%m-%d %H:%M:%S") if value else "All dates")
+        self.button.configure(text=value.strftime("%Y-%m-%d %H:%M:%S") if value else 'Mọi ngày')
 
     def _open(self) -> None:
         if self._popup is not None and self._popup.winfo_exists():
@@ -39,7 +39,7 @@ class DateTimeDialog(ctk.CTkToplevel):
     def __init__(self, picker: DateTimePicker) -> None:
         super().__init__(picker)
         self.picker = picker
-        self.title("Date and time")
+        self.title('Ngày và giờ')
         self.geometry("390x410")
         self.resizable(False, False)
         self.transient(picker.winfo_toplevel())
@@ -64,14 +64,14 @@ class DateTimeDialog(ctk.CTkToplevel):
             self.days.grid_columnconfigure(column, weight=1, uniform="days")
         clock = ctk.CTkFrame(self, fg_color="transparent")
         clock.grid(row=2, column=0, padx=16, pady=8, sticky="w")
-        for column, (label, variable, maximum) in enumerate([("Hour", self.hour, 23), ("Minute", self.minute, 59), ("Second", self.second, 59)]):
+        for column, (label, variable, maximum) in enumerate([('Giờ', self.hour, 23), ('Phút', self.minute, 59), ('Giây', self.second, 59)]):
             ctk.CTkLabel(clock, text=label).grid(row=0, column=column, padx=8)
             self._spin(clock, variable, 0, maximum).grid(row=1, column=column, padx=8)
         actions = ctk.CTkFrame(self, fg_color="transparent")
         actions.grid(row=3, column=0, padx=16, pady=12, sticky="ew")
-        ctk.CTkButton(actions, text="Today", width=72, command=self._today).pack(side="left", padx=(0, 6))
-        ctk.CTkButton(actions, text="Clear", width=72, command=self._clear).pack(side="left")
-        ctk.CTkButton(actions, text="Apply", width=90, command=self._apply).pack(side="right")
+        ctk.CTkButton(actions, text='Hôm nay', width=72, command=self._today).pack(side="left", padx=(0, 6))
+        ctk.CTkButton(actions, text='Xóa', width=72, command=self._clear).pack(side="left")
+        ctk.CTkButton(actions, text='Áp dụng', width=90, command=self._apply).pack(side="right")
         self._render()
         polish(self)
         self.after(50, self.lift)
@@ -90,7 +90,7 @@ class DateTimeDialog(ctk.CTkToplevel):
             child.destroy()
         year, month = int(self.year.get()), int(self.month.get())
         self.selected = date(year, month, min(self.selected.day, calendar.monthrange(year, month)[1]))
-        for column, day in enumerate(["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"]):
+        for column, day in enumerate(["T2", "T3", "T4", "T5", "T6", "T7", "CN"]):
             ctk.CTkLabel(self.days, text=day, height=24).grid(row=0, column=column)
         weeks = calendar.Calendar(firstweekday=0).monthdayscalendar(year, month)
         for row in range(6):

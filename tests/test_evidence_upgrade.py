@@ -77,6 +77,33 @@ class UnknownIncidentTests(unittest.TestCase):
         self.assertEqual(self.db.email_delivery_counts(), {})
         self.assertEqual(self.db.list_logs()[0]["classification_state"], "undetermined")
 
+    def test_internet_event_changes_are_recorded_once_without_creating_incident_mail(self):
+        def check(state):
+            result = CheckResult(True, "up", evidence={"internet_check": {"state": state, "profile": "internet", "targets": []}})
+            self.db.record_check_result(self.id, result)
+        check("reference_unreachable")
+        check("reference_unreachable")
+        check("reachable")
+        self.assertEqual([event["state"] for event in self.db.list_network_events()], ["reachable", "reference_unreachable"])
+        self.assertEqual(self.db.email_delivery_counts(), {})
+
+    def test_reference_probe_alone_is_not_evidence_of_monitor_failure(self):
+        result = CheckResult(False, "down", error_type="timeout", classification_state="confirmed", evidence={"internet_check": {"state": "reference_unreachable", "profile": "internet", "targets": []}})
+        self.db.record_check_result(self.id, result)
+        self.assertEqual(self.db.list_logs()[0]["error_type"], "unknown")
+        self.assertEqual(self.db.email_delivery_counts(), {})
+
+    def test_internet_event_ignores_older_results_and_updates_last_seen(self):
+        def check(state, stamp):
+            self.db.record_check_result(self.id, CheckResult(True, "up", evidence={"internet_check": {"state": state, "profile": "internet", "checked_at": stamp, "targets": []}}))
+        check("reachable", "2026-01-01T10:00:00")
+        check("reachable", "2026-01-01T10:01:00")
+        check("reference_unreachable", "2026-01-01T09:59:00")
+        events = self.db.list_network_events()
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["checked_at"], "2026-01-01T10:00:00")
+        self.assertEqual(events[0]["last_seen_at"], "2026-01-01T10:01:00")
+
     def test_recovery_keeps_original_diagnosis_evidence(self):
         self.db.record_check_result(self.id, CheckResult(False, "down", error_type="timeout", reason_code="read_timeout", phase="request", evidence_source="transport", evidence={"exception_kind": "ReadTimeout"}))
         self.record("unknown")

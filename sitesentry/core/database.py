@@ -22,7 +22,7 @@ SECRET_MONITOR_FIELDS = {
     "diagnostic_rules_json": "diagnostic_rules_enc",
 }
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 def now_iso() -> str:
@@ -138,6 +138,15 @@ class Database(NotificationStore):
                     definition_json TEXT NOT NULL
                 );
 
+                CREATE TABLE IF NOT EXISTS network_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    profile TEXT NOT NULL,
+                    state TEXT NOT NULL,
+                    checked_at TEXT NOT NULL,
+                    last_seen_at TEXT NOT NULL DEFAULT '',
+                    evidence_json TEXT NOT NULL DEFAULT '{}'
+                );
+
                 CREATE TABLE IF NOT EXISTS email_rules (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     name TEXT NOT NULL,
@@ -177,6 +186,9 @@ class Database(NotificationStore):
                 """
             )
             columns = {row["name"] for row in self._conn.execute("PRAGMA table_info(monitors)")}
+            network_columns = {row["name"] for row in self._conn.execute("PRAGMA table_info(network_events)")}
+            if "last_seen_at" not in network_columns:
+                self._conn.execute("ALTER TABLE network_events ADD COLUMN last_seen_at TEXT NOT NULL DEFAULT ''")
             for column in ("language", "web_server"):
                 if column not in columns:
                     self._conn.execute(f"ALTER TABLE monitors ADD COLUMN {column} TEXT NOT NULL DEFAULT ''")
@@ -226,6 +238,11 @@ class Database(NotificationStore):
     def close(self) -> None:
         with self._lock:
             self._conn.close()
+
+    def list_network_events(self, limit: int = 100) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self._conn.execute("SELECT * FROM network_events ORDER BY id DESC LIMIT ?", (max(1, int(limit)),)).fetchall()
+        return [dict(row) for row in rows]
 
     def _monitor_row_to_dict(self, row: sqlite3.Row | None) -> dict[str, Any] | None:
         if row is None:

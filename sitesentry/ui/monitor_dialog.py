@@ -8,12 +8,14 @@ from typing import Any, Callable
 
 import customtkinter as ctk
 
+from .vi import message as vi_message
 from .focus import bind_focus_on_click
 from .theme import fit_wrap, polish
 from .background import run_background
 from sitesentry.core.diagnostics import error_label
 from sitesentry.core.diagnostic_rules import validate_rules
 from .diagnostics_dialog import MonitorDiagnosticsDialog
+from .vi import CLASSIFICATIONS, PHASES, label
 
 
 SaveCallback = Callable[[], None]
@@ -43,7 +45,7 @@ class MonitorDialog(ctk.CTkToplevel):
         self._diagnostic_dialog: MonitorDiagnosticsDialog | None = None
         self.on_save = on_save
         self._first_focus_widget: ctk.CTkEntry | None = None
-        self.title("Monitor")
+        self.title('Monitor')
         self.geometry("980x840")
         self.minsize(860, 720)
         self.transient(master)
@@ -101,36 +103,36 @@ class MonitorDialog(ctk.CTkToplevel):
 
         self._entry(
             frame,
-            "Name",
+            'Tên',
             self.name_var,
             0,
             0,
             columnspan=3,
             required=True,
-            placeholder="Homepage, Login portal, Health API...",
+            placeholder="Trang chủ, cổng đăng nhập, API...",
         )
         self._entry(
             frame,
-            "Expected HTTP",
+            'Mã HTTP mong đợi',
             self.expected_status_var,
             0,
             3,
             required=True,
             placeholder="200",
         )
-        ctk.CTkCheckBox(frame, text="Enabled", variable=self.enabled_var).grid(row=0, column=4, padx=8, pady=8, sticky="w")
+        ctk.CTkCheckBox(frame, text='Đang bật', variable=self.enabled_var).grid(row=0, column=4, padx=8, pady=8, sticky="w")
 
-        self._entry(frame, "Interval (sec)", self.interval_var, 1, 0, required=True, placeholder="60")
-        self._entry(frame, "Timeout (sec)", self.timeout_var, 1, 1, required=True, placeholder="10")
-        self._entry(frame, "Retries", self.retry_count_var, 1, 2, required=True, placeholder="3")
-        self._entry(frame, "Retry delay", self.retry_delay_var, 1, 3, columnspan=3, required=True, placeholder="2")
+        self._entry(frame, 'Chu kỳ (giây)', self.interval_var, 1, 0, required=True, placeholder="60")
+        self._entry(frame, 'Thời gian chờ (giây)', self.timeout_var, 1, 1, required=True, placeholder="10")
+        self._entry(frame, 'Số lần thử', self.retry_count_var, 1, 2, required=True, placeholder="3")
+        self._entry(frame, 'Giãn cách thử lại', self.retry_delay_var, 1, 3, columnspan=3, required=True, placeholder="2")
 
-        self._entry(frame, "Language", self.language_var, 2, 0, columnspan=3, placeholder="PHP, Python, Java, .NET...")
-        self._entry(frame, "Web server", self.web_server_var, 2, 3, columnspan=3, placeholder="Nginx, Apache, IIS...")
+        self._entry(frame, 'Ngôn ngữ', self.language_var, 2, 0, columnspan=3, placeholder="PHP, Python, Java, .NET...")
+        self._entry(frame, 'Máy chủ web', self.web_server_var, 2, 3, columnspan=3, placeholder="Nginx, Apache, IIS...")
         self.expected_text = bind_focus_on_click(ctk.CTkTextbox(frame, height=48))
-        ctk.CTkLabel(frame, text="Expected text").grid(row=6, column=0, padx=8, pady=(6, 0), sticky="w")
+        ctk.CTkLabel(frame, text='Nội dung mong đợi').grid(row=6, column=0, padx=8, pady=(6, 0), sticky="w")
         self.expected_text.grid(row=7, column=0, columnspan=6, padx=8, pady=(0, 6), sticky="ew")
-        ctk.CTkButton(frame, text="Network & diagnostic rules", command=self._open_diagnostics, width=205).grid(row=8, column=0, columnspan=2, padx=8, pady=(2, 8), sticky="w")
+        ctk.CTkButton(frame, text='Mạng và quy tắc chẩn đoán', command=self._open_diagnostics, width=205).grid(row=8, column=0, columnspan=2, padx=8, pady=(2, 8), sticky="w")
         self.diagnostic_summary = ctk.CTkLabel(frame, text="", anchor="w")
         self.diagnostic_summary.grid(row=8, column=2, columnspan=4, padx=8, sticky="ew")
         self._update_diagnostic_summary()
@@ -140,7 +142,7 @@ class MonitorDialog(ctk.CTkToplevel):
             count = len(validate_rules(self._diagnostic_rules))
         except ValueError:
             count = 0
-        self.diagnostic_summary.configure(text=f"Profile: {self._diagnostic_profile or 'None'} | Rules: {count}")
+        self.diagnostic_summary.configure(text=f"Profile: {self._diagnostic_profile or 'Chưa chọn'} | Quy tắc: {count}")
 
     def _open_diagnostics(self) -> None:
         if self._diagnostic_dialog is not None and self._diagnostic_dialog.winfo_exists():
@@ -174,7 +176,7 @@ class MonitorDialog(ctk.CTkToplevel):
             required=True,
             placeholder="https://example.com",
         )
-        ctk.CTkLabel(self.web_tab, text="Headers JSON").grid(row=2, column=0, padx=8, pady=(10, 0), sticky="nw")
+        ctk.CTkLabel(self.web_tab, text='Header JSON').grid(row=2, column=0, padx=8, pady=(10, 0), sticky="nw")
         self.web_headers = bind_focus_on_click(ctk.CTkTextbox(self.web_tab, height=160))
         self.web_headers.grid(row=3, column=1, padx=8, pady=(10, 8), sticky="nsew")
         self.web_tab.grid_rowconfigure(3, weight=1)
@@ -199,7 +201,7 @@ class MonitorDialog(ctk.CTkToplevel):
 
         self._inline_entry(
             auth_frame,
-            "Protected URL",
+            'URL cần bảo vệ',
             self.auth_url_var,
             0,
             0,
@@ -209,7 +211,7 @@ class MonitorDialog(ctk.CTkToplevel):
         )
         self._inline_entry(
             auth_frame,
-            "Login URL",
+            'URL đăng nhập',
             self.auth_login_url_var,
             1,
             0,
@@ -219,16 +221,16 @@ class MonitorDialog(ctk.CTkToplevel):
         )
         self._inline_entry(
             auth_frame,
-            "Verify URL",
+            'URL xác minh',
             self.auth_verify_url_var,
             2,
             0,
             entry_columnspan=3,
-            placeholder="Optional, defaults to Protected URL",
+            placeholder='Tùy chọn, mặc định là URL cần bảo vệ',
         )
         self._inline_entry(
             auth_frame,
-            "Username",
+            'Tên đăng nhập',
             self.auth_username_var,
             3,
             0,
@@ -237,17 +239,17 @@ class MonitorDialog(ctk.CTkToplevel):
         )
         self._inline_entry(
             auth_frame,
-            "Password",
+            'Mật khẩu',
             self.auth_password_var,
             3,
             2,
             show="*",
             required=True,
-            placeholder="Login password",
+            placeholder='Mật khẩu đăng nhập',
         )
         self._inline_entry(
             auth_frame,
-            "Username field",
+            'Tên trường đăng nhập',
             self.auth_username_field_var,
             4,
             0,
@@ -256,7 +258,7 @@ class MonitorDialog(ctk.CTkToplevel):
         )
         self._inline_entry(
             auth_frame,
-            "Password field",
+            'Tên trường mật khẩu',
             self.auth_password_field_var,
             4,
             2,
@@ -265,18 +267,18 @@ class MonitorDialog(ctk.CTkToplevel):
         )
         self._inline_entry(
             auth_frame,
-            "Verify text",
+            'Nội dung xác minh',
             self.auth_verify_text_var,
             5,
             0,
             entry_columnspan=3,
-            placeholder="Optional text after login",
+            placeholder='Nội dung sau đăng nhập (tùy chọn)',
         )
 
-        ctk.CTkLabel(auth_frame, text="Extra login fields JSON").grid(row=6, column=0, padx=8, pady=(8, 6), sticky="nw")
+        ctk.CTkLabel(auth_frame, text='Trường đăng nhập bổ sung (JSON)').grid(row=6, column=0, padx=8, pady=(8, 6), sticky="nw")
         self.auth_extra_fields = bind_focus_on_click(ctk.CTkTextbox(auth_frame, height=78))
         self.auth_extra_fields.grid(row=6, column=1, columnspan=3, padx=8, pady=(8, 6), sticky="ew")
-        ctk.CTkLabel(auth_frame, text="Headers JSON").grid(row=7, column=0, padx=8, pady=(6, 8), sticky="nw")
+        ctk.CTkLabel(auth_frame, text='Header JSON').grid(row=7, column=0, padx=8, pady=(6, 8), sticky="nw")
         self.auth_headers = bind_focus_on_click(ctk.CTkTextbox(auth_frame, height=78))
         self.auth_headers.grid(row=7, column=1, columnspan=3, padx=8, pady=(6, 8), sticky="ew")
 
@@ -293,7 +295,7 @@ class MonitorDialog(ctk.CTkToplevel):
 
         self._entry(
             self.api_tab,
-            "Endpoint URL",
+            'URL API',
             self.api_url_var,
             0,
             0,
@@ -301,7 +303,7 @@ class MonitorDialog(ctk.CTkToplevel):
             required=True,
             placeholder="https://api.example.com/health",
         )
-        ctk.CTkLabel(self.api_tab, text="Method *", text_color=REQUIRED_COLOR).grid(
+        ctk.CTkLabel(self.api_tab, text='Phương thức *', text_color=REQUIRED_COLOR).grid(
             row=2,
             column=0,
             padx=8,
@@ -313,16 +315,16 @@ class MonitorDialog(ctk.CTkToplevel):
             values=["GET", "POST", "PUT", "PATCH", "DELETE"],
             variable=self.method_var,
         ).grid(row=3, column=1, padx=8, pady=(0, 8), sticky="ew")
-        self._entry(self.api_tab, "Token header", self.api_token_header_var, 1, 2, placeholder="Authorization")
-        self._entry(self.api_tab, "Token prefix", self.api_token_prefix_var, 1, 3, placeholder="Bearer")
-        self._entry(self.api_tab, "API token", self.api_token_var, 2, 0, columnspan=4, show="*", placeholder="Optional token")
-        self._entry(self.api_tab, "JSON path", self.json_path_var, 3, 0, columnspan=2, placeholder="data.status")
-        self._entry(self.api_tab, "Expected JSON value", self.json_value_var, 3, 2, columnspan=2, placeholder="ok")
+        self._entry(self.api_tab, 'Header chứa token', self.api_token_header_var, 1, 2, placeholder="Authorization")
+        self._entry(self.api_tab, 'Tiền tố token', self.api_token_prefix_var, 1, 3, placeholder="Bearer")
+        self._entry(self.api_tab, "API token", self.api_token_var, 2, 0, columnspan=4, show="*", placeholder='Token (tùy chọn)')
+        self._entry(self.api_tab, 'Đường dẫn JSON', self.json_path_var, 3, 0, columnspan=2, placeholder="data.status")
+        self._entry(self.api_tab, 'Giá trị JSON mong đợi', self.json_value_var, 3, 2, columnspan=2, placeholder="ok")
 
-        ctk.CTkLabel(self.api_tab, text="Headers JSON").grid(row=8, column=0, padx=8, pady=(10, 0), sticky="nw")
+        ctk.CTkLabel(self.api_tab, text='Header JSON').grid(row=8, column=0, padx=8, pady=(10, 0), sticky="nw")
         self.api_headers = bind_focus_on_click(ctk.CTkTextbox(self.api_tab, height=110))
         self.api_headers.grid(row=9, column=1, columnspan=3, padx=8, pady=(10, 8), sticky="nsew")
-        ctk.CTkLabel(self.api_tab, text="Body").grid(row=10, column=0, padx=8, pady=(10, 0), sticky="nw")
+        ctk.CTkLabel(self.api_tab, text='Nội dung gửi').grid(row=10, column=0, padx=8, pady=(10, 0), sticky="nw")
         self.api_body = bind_focus_on_click(ctk.CTkTextbox(self.api_tab, height=150))
         self.api_body.grid(row=11, column=1, columnspan=3, padx=8, pady=(10, 8), sticky="nsew")
         self.api_tab.grid_rowconfigure(11, weight=1)
@@ -331,15 +333,15 @@ class MonitorDialog(ctk.CTkToplevel):
         frame = ctk.CTkFrame(self, fg_color="transparent")
         frame.grid(row=2, column=0, padx=16, pady=(8, 16), sticky="ew")
         frame.grid_columnconfigure(0, weight=1)
-        self.result_label = ctk.CTkLabel(frame, text="Not tested", anchor="w", justify="left", wraplength=760, text_color=INFO_COLOR)
+        self.result_label = ctk.CTkLabel(frame, text='Chưa kiểm tra', anchor="w", justify="left", wraplength=760, text_color=INFO_COLOR)
         self.result_label.grid(row=0, column=0, columnspan=5, pady=(0, 8), sticky="ew")
         frame.bind("<Configure>", lambda event: fit_wrap(self.result_label, event.width - 12))
-        self.test_button = ctk.CTkButton(frame, text="Test Run", command=self._test_run, width=110)
+        self.test_button = ctk.CTkButton(frame, text='Kiểm tra thử', command=self._test_run, width=110)
         self.test_button.grid(row=1, column=1, padx=6)
-        self.detail_button = ctk.CTkButton(frame, text="Details", command=self._show_test_details, width=82, state="disabled")
+        self.detail_button = ctk.CTkButton(frame, text='Chi tiết', command=self._show_test_details, width=82, state="disabled")
         self.detail_button.grid(row=1, column=2, padx=6)
-        ctk.CTkButton(frame, text="Cancel", command=self._close, width=90, fg_color="#475569").grid(row=1, column=3, padx=6)
-        ctk.CTkButton(frame, text="Save", command=self._save, width=90).grid(row=1, column=4, padx=(6, 0))
+        ctk.CTkButton(frame, text='Hủy', command=self._close, width=90, fg_color="#475569").grid(row=1, column=3, padx=6)
+        ctk.CTkButton(frame, text='Lưu', command=self._save, width=90).grid(row=1, column=4, padx=(6, 0))
 
     def _entry(
         self,
@@ -509,87 +511,87 @@ class MonitorDialog(ctk.CTkToplevel):
 
         def require_text(key: str, label: str) -> None:
             if not str(data.get(key) or "").strip():
-                errors.append(f"{label} is required.")
+                errors.append(f"{label} là bắt buộc.")
 
         def validate_url(key: str, label: str) -> None:
             value = str(data.get(key) or "").strip()
             if not value:
-                errors.append(f"{label} is required.")
+                errors.append(f"{label} là bắt buộc.")
                 return
             if not value.startswith(("http://", "https://")):
-                errors.append(f"{label} must start with http:// or https://.")
+                errors.append(f"{label} phải bắt đầu bằng http:// hoặc https://.")
 
         def validate_int(key: str, label: str, minimum: int | None = None, maximum: int | None = None) -> None:
             value = str(data.get(key) or "").strip()
             if not value:
-                errors.append(f"{label} is required.")
+                errors.append(f"{label} là bắt buộc.")
                 return
             try:
                 parsed = int(value)
             except ValueError:
-                errors.append(f"{label} must be a whole number.")
+                errors.append(f"{label} phải là số nguyên.")
                 return
             if minimum is not None and parsed < minimum:
-                errors.append(f"{label} must be at least {minimum}.")
+                errors.append(f"{label} phải từ {minimum} trở lên.")
             if maximum is not None and parsed > maximum:
-                errors.append(f"{label} must be at most {maximum}.")
+                errors.append(f"{label} không được vượt quá {maximum}.")
 
         def validate_float(key: str, label: str, minimum: float | None = None) -> None:
             value = str(data.get(key) or "").strip()
             if not value:
-                errors.append(f"{label} is required.")
+                errors.append(f"{label} là bắt buộc.")
                 return
             try:
                 parsed = float(value)
             except ValueError:
-                errors.append(f"{label} must be a number.")
+                errors.append(f"{label} phải là số.")
                 return
             if minimum is not None and parsed < minimum:
-                errors.append(f"{label} must be at least {minimum:g}.")
+                errors.append(f"{label} phải từ {minimum:g} trở lên.")
 
-        require_text("name", "Name")
+        require_text("name", 'Tên')
         validate_url("url", "URL")
-        validate_int("expected_status", "Expected HTTP", minimum=100, maximum=599)
-        validate_int("interval_seconds", "Interval (sec)", minimum=10)
-        validate_float("timeout_seconds", "Timeout (sec)", minimum=1)
-        validate_int("retry_count", "Retries", minimum=1)
-        validate_float("retry_delay_seconds", "Retry delay", minimum=0)
-        validate_int("cooldown_minutes", "Cooldown (min)", minimum=0)
+        validate_int("expected_status", 'Mã HTTP mong đợi', minimum=100, maximum=599)
+        validate_int("interval_seconds", 'Chu kỳ (giây)', minimum=10)
+        validate_float("timeout_seconds", 'Thời gian chờ (giây)', minimum=1)
+        validate_int("retry_count", 'Số lần thử', minimum=1)
+        validate_float("retry_delay_seconds", 'Giãn cách thử lại', minimum=0)
+        validate_int("cooldown_minutes", 'Thời gian chờ cảnh báo (phút)', minimum=0)
 
         if monitor_type == "auth_web":
-            validate_url("auth_login_url", "Login URL")
-            require_text("auth_username", "Username")
-            require_text("auth_password", "Password")
-            require_text("auth_username_field", "Username field")
-            require_text("auth_password_field", "Password field")
+            validate_url("auth_login_url", 'URL đăng nhập')
+            require_text("auth_username", 'Tên đăng nhập')
+            require_text("auth_password", 'Mật khẩu')
+            require_text("auth_username_field", 'Tên trường đăng nhập')
+            require_text("auth_password_field", 'Tên trường mật khẩu')
             verify_url = str(data.get("auth_verify_url") or "").strip()
             if verify_url and not verify_url.startswith(("http://", "https://")):
-                errors.append("Verify URL must start with http:// or https://.")
+                errors.append("URL xác minh phải bắt đầu bằng http:// hoặc https://.")
         elif monitor_type == "api":
             method = str(data.get("method") or "").upper()
             if method not in {"GET", "POST", "PUT", "PATCH", "DELETE"}:
-                errors.append("Method is required.")
+                errors.append("Cần chọn phương thức.")
             if str(data.get("expected_json_value") or "").strip() and not str(data.get("expected_json_path") or "").strip():
-                errors.append("JSON path is required when Expected JSON value is filled.")
+                errors.append("Cần nhập đường dẫn JSON khi có giá trị JSON mong đợi.")
 
-        json_fields = [(data.get("headers_json"), "Headers JSON")]
+        json_fields = [(data.get("headers_json"), 'Header JSON')]
         try:
             validate_rules(data.get("diagnostic_rules_json"))
             if data.get("network_profile") and not self.app.db.get_network_profile(data["network_profile"]):
-                raise ValueError("Network profile does not exist")
+                raise ValueError('Profile mạng không tồn tại')
         except ValueError as exc:
-            errors.append(f"Diagnostics: {exc}.")
+            errors.append(f"Chẩn đoán: {vi_message(exc)}.")
         if monitor_type == "auth_web":
-            json_fields.append((data.get("auth_extra_fields"), "Extra login fields JSON"))
+            json_fields.append((data.get("auth_extra_fields"), 'Trường đăng nhập bổ sung (JSON)'))
         for raw, label in json_fields:
             if raw:
                 try:
                     parsed = json.loads(str(raw))
                 except json.JSONDecodeError as exc:
-                    errors.append(f"{label} is invalid: {exc}.")
+                    errors.append(f"{label} không hợp lệ: {exc}.")
                     continue
                 if not isinstance(parsed, dict):
-                    errors.append(f"{label} must be a JSON object.")
+                    errors.append(f"{label} phải là đối tượng JSON.")
 
         return errors
 
@@ -597,10 +599,10 @@ class MonitorDialog(ctk.CTkToplevel):
         errors = self._collect_validation_errors(data)
         if errors:
             message = "\n".join(f"- {error}" for error in errors)
-            self.result_label.configure(text=f"Please fix {len(errors)} field(s) before continuing.", text_color=ERROR_COLOR)
-            messagebox.showerror("Missing or invalid information", message, parent=self)
+            self.result_label.configure(text=f"Vui lòng sửa {len(errors)} trường trước khi tiếp tục.", text_color=ERROR_COLOR)
+            messagebox.showerror('Thông tin thiếu hoặc không hợp lệ', message, parent=self)
             return False
-        self.result_label.configure(text="Ready to save or test.", text_color=SUCCESS_COLOR)
+        self.result_label.configure(text='Sẵn sàng lưu hoặc kiểm tra.', text_color=SUCCESS_COLOR)
         return True
 
     def _save(self) -> None:
@@ -619,44 +621,42 @@ class MonitorDialog(ctk.CTkToplevel):
         data = self._payload()
         if not self._validate(data):
             return
-        self.result_label.configure(text="Running test...", text_color=INFO_COLOR)
+        self.result_label.configure(text='Đang kiểm tra...', text_color=INFO_COLOR)
         self.test_button.configure(state="disabled")
 
         def done(result: Any) -> None:
-            message = "UP" if result.ok else f"DOWN: {result.error}"
+            message = "UP" if result.ok else f"DOWN: {vi_message(result.error)}"
             if not result.ok and data.get("monitor_type") == "auth_web":
-                redirect = result.details.get("login_post_redirect") or "none"
-                post_status = result.details.get("login_post_status", "unknown")
+                redirect = result.details.get("login_post_redirect") or "không có"
+                post_status = result.details.get("login_post_status", "chưa rõ")
                 cookie_names = result.details.get("login_post_cookie_names") or []
-                cookies = ", ".join(cookie_names) if cookie_names else "none"
-                field_names = ", ".join(result.details.get("login_post_field_names") or []) or "none"
-                post_preview = result.details.get("login_post_preview") or "empty response"
+                cookies = ", ".join(cookie_names) if cookie_names else "không có"
+                field_names = ", ".join(result.details.get("login_post_field_names") or []) or "không có"
                 message += (
-                    f" [Login POST HTTP {post_status}; redirect: {redirect}; "
-                    f"Set-Cookie names: {cookies}; fields sent: {field_names}; "
-                    f"response: {post_preview}]"
+                    f" [POST đăng nhập HTTP {post_status}; chuyển hướng: {redirect}; "
+                    f"tên Set-Cookie: {cookies}; trường đã gửi: {field_names}]"
                 )
             http_info = f"HTTP {result.status_code}, " if result.status_code is not None else ""
             response_ms = result.response_ms if result.response_ms is not None else "-"
-            suffix = f"{http_info}{response_ms} ms, attempts {result.attempts}"
+            suffix = f"{http_info}{response_ms} ms, số lần thử {result.attempts}"
             color = SUCCESS_COLOR if result.ok else ERROR_COLOR
             evidence = json.dumps(result.evidence, ensure_ascii=False, indent=2)
             classification = result.classification_state or ("not_applicable" if result.ok else "confirmed" if result.error_type != "unknown" else "undetermined")
-            self._test_details = f"{error_label(result.error_type)}\nClassification: {classification}\nPhase: {result.phase or '-'}\nReason: {result.reason_code or '-'}\nEvidence source: {result.evidence_source or '-'}\nEvidence: {evidence}\n{message}\n{suffix}"
-            brief = "UP" if result.ok else f"{error_label(result.error_type)}: {result.error[:220]}"
+            self._test_details = f"{error_label(result.error_type)}\nPhân loại: {label(CLASSIFICATIONS, classification)}\nGiai đoạn: {label(PHASES, result.phase)}\nMã lý do: {result.reason_code or '-'}\nNguồn bằng chứng: {result.evidence_source or '-'}\nBằng chứng: {evidence}\n{message}\n{suffix}"
+            brief = "UP" if result.ok else f"{error_label(result.error_type)}: {vi_message(result.error[:220])}"
             self.result_label.configure(text=f"{brief} ({suffix})", text_color=color)
             self.test_button.configure(state="normal")
             self.detail_button.configure(state="normal")
 
         def failed(message: str) -> None:
             self.test_button.configure(state="normal")
-            self.result_label.configure(text=message, text_color=ERROR_COLOR)
+            self.result_label.configure(text=vi_message(message), text_color=ERROR_COLOR)
 
         run_background(self.app, self, lambda: asyncio.run(self.app.checker.check_monitor(data)), done, failed)
 
     def _show_test_details(self) -> None:
         dialog = ctk.CTkToplevel(self)
-        dialog.title("Check diagnostics")
+        dialog.title('Chẩn đoán kiểm tra')
         dialog.geometry("680x440")
         dialog.transient(self)
         text = ctk.CTkTextbox(dialog, wrap="word")

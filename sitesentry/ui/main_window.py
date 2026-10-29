@@ -91,7 +91,7 @@ class SiteSentryApp(ctk.CTk):
         self.db = Database(self.config.get("database_path", "data/sitesentry.db"), security=self.security)
         saved_appearance = self.db.get_setting("appearance", appearance)
         ctk.set_appearance_mode(saved_appearance)
-        self.checker = SiteChecker(profile_resolver=self.db.get_network_profile)
+        self.checker = SiteChecker(profile_resolver=self.db.get_network_profile, internet_profile_resolver=lambda: self.db.get_network_profile(self.db.get_setting("internet_profile", "")))
         self.notifier = EmailNotifier(self.db)
         self.scheduler = MonitorScheduler(self.db, self.checker, self.notifier, on_result=self._on_monitor_result)
 
@@ -101,7 +101,7 @@ class SiteSentryApp(ctk.CTk):
         self._closing = False
         self._result_queue: queue.Queue[tuple[dict[str, Any], Any]] = queue.Queue()
         self._ui_action_queue: queue.Queue[Callable[[], None]] = queue.Queue()
-        self.status_text = tk.StringVar(value="Starting...")
+        self.status_text = tk.StringVar(value="Đang khởi động...")
         self._build_layout()
         self.show_view("Dashboard")
         self.protocol("WM_DELETE_WINDOW", self._handle_close)
@@ -128,16 +128,17 @@ class SiteSentryApp(ctk.CTk):
         sidebar.grid_rowconfigure(5, weight=1)
         ctk.CTkLabel(sidebar, text="SiteSentry", font=ctk.CTkFont(size=23, weight="bold"), text_color=TEXT).grid(row=0, column=0, padx=18, pady=(28, 24), sticky="w")
         self.nav_buttons = {}
+        nav_titles = {"Dashboard": "Tổng quan", "Statistics": "Thống kê", "Logs": "Nhật ký", "Settings": "Cài đặt"}
         for row, name in enumerate(["Dashboard", "Statistics", "Logs", "Settings"], start=1):
-            button = ctk.CTkButton(sidebar, text=name, anchor="w", width=150, height=36, corner_radius=5, text_color=MUTED, fg_color="transparent", hover_color=SELECTION, command=lambda selected=name: self.show_view(selected))
+            button = ctk.CTkButton(sidebar, text=nav_titles[name], anchor="w", width=150, height=36, corner_radius=5, text_color=MUTED, fg_color="transparent", hover_color=SELECTION, command=lambda selected=name: self.show_view(selected))
             button.grid(row=row, column=0, padx=14, pady=4, sticky="ew")
             self.nav_buttons[name] = button
         self.status_label = ctk.CTkLabel(sidebar, textvariable=self.status_text, text_color="#94a3b8", justify="left", wraplength=176)
         self.status_label.grid(row=5, column=0, padx=18, pady=12, sticky="sw")
-        self.tray_button = ctk.CTkButton(sidebar, text="Hide to Tray", command=self.hide_to_tray, fg_color="#475569")
+        self.tray_button = ctk.CTkButton(sidebar, text="Ẩn xuống khay", command=self.hide_to_tray, fg_color="#475569")
         self.tray_button.grid(row=6, column=0, padx=18, pady=(6, 18), sticky="ew")
         if not self._tray_enabled:
-            self.tray_button.configure(state="disabled", text="Tray unavailable")
+            self.tray_button.configure(state="disabled", text="Khay không khả dụng")
 
         self.content = ctk.CTkFrame(self, fg_color="transparent")
         self.content.grid(row=0, column=1, sticky="nsew")
@@ -277,13 +278,13 @@ class SiteSentryApp(ctk.CTk):
 
     def _update_status_text(self) -> None:
         monitor_count = len(self.db.list_monitors(include_disabled=True))
-        scheduler_state = "running" if self.scheduler.running else "stopped"
-        tray_state = "hidden" if self._tray_icon is not None and not self.winfo_viewable() else ("on" if self._tray_icon is not None else "off")
+        scheduler_state = "đang chạy" if self.scheduler.running else "đã dừng"
+        tray_state = "đang ẩn" if self._tray_icon is not None and not self.winfo_viewable() else ("bật" if self._tray_icon is not None else "tắt")
         python_version = f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
         self.status_text.set(
-            f"Scheduler: {scheduler_state}\n"
+            f"Lập lịch: {scheduler_state}\n"
             f"Monitors: {monitor_count}\n"
-            f"Tray: {tray_state}\n"
+            f"Khay: {tray_state}\n"
             f"Python: {python_version}"
         )
 
@@ -292,10 +293,10 @@ class SiteSentryApp(ctk.CTk):
 
         image = Image.open(asset_path("icon.png"))
         menu = pystray.Menu(
-            pystray.MenuItem("Show SiteSentry", self._tray_show, default=True),
-            pystray.MenuItem("Hide Window", self._tray_hide),
-            pystray.MenuItem("Run All Now", self._tray_run_all_now),
-            pystray.MenuItem("Quit", self._tray_quit),
+            pystray.MenuItem("Mở SiteSentry", self._tray_show, default=True),
+            pystray.MenuItem("Ẩn cửa sổ", self._tray_hide),
+            pystray.MenuItem("Kiểm tra tất cả", self._tray_run_all_now),
+            pystray.MenuItem("Thoát", self._tray_quit),
         )
         self._tray_icon = pystray.Icon("sitesentry", image, "SiteSentry Desktop", menu)
         try:
@@ -305,5 +306,5 @@ class SiteSentryApp(ctk.CTk):
             thread.start()
         except Exception:
             self._tray_icon = None
-            self.tray_button.configure(state="disabled", text="Tray unavailable")
+            self.tray_button.configure(state="disabled", text="Khay không khả dụng")
         self._update_status_text()

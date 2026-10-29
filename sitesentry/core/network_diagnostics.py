@@ -11,6 +11,7 @@ from typing import Any
 from urllib.parse import parse_qsl, urlsplit, urlunsplit
 
 import httpx
+from .diagnostics import exception_category
 
 
 SECRET_QUERY = re.compile(r"(?:token|secret|pass(?:word)?|auth|api[_-]?key|session|csrf|captcha|signature|code)", re.IGNORECASE)
@@ -107,8 +108,8 @@ class NetworkDiagnostics:
                 display_url = urlunsplit((parts.scheme, parts.netloc, parts.path, "", ""))
                 try:
                     response = await client.request(target["method"], target["url"], timeout=target["timeout_seconds"])
-                except httpx.HTTPError as exc:
-                    results.append({"url": display_url, "reachable": False, "exception_kind": type(exc).__name__})
+                except (httpx.HTTPError, OSError) as exc:
+                    results.append({"url": display_url, "reachable": False, "exception_kind": type(exc).__name__, "error_type": exception_category(exc)})
                 else:
                     results.append({"url": display_url, "reachable": True, "http_status": response.status_code})
         return {"profile": profile["name"], "scope": profile["scope"], "checked_at": datetime.now().isoformat(timespec="seconds"), "targets": results}

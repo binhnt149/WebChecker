@@ -1,5 +1,6 @@
 import asyncio
 import unittest
+import errno
 from unittest.mock import patch
 
 import httpx
@@ -90,3 +91,45 @@ class NetworkProfileTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.error_type, "timeout")
         self.assertTrue(result.evidence["network_probe"]["targets"][0]["reachable"])
         self.assertEqual(len(requests), 1)
+
+    async def test_internet_reference_is_checked_before_monitor_without_blocking_internal_target(self):
+        order = []
+        internet = {**self.profile(), "scope": "internet"}
+        async def handler(request):
+            order.append("reference")
+            raise httpx.ConnectError("unreachable", request=request)
+        engine = NetworkDiagnostics(transport=httpx.MockTransport(handler))
+        checker = SiteChecker(internet_profile_resolver=lambda: internet, network_diagnostics=engine)
+        from sitesentry.core.checker import CheckResult
+        async def target(_monitor):
+            order.append("target")
+            return CheckResult(True, "up", status_code=200)
+        with patch.object(checker, "_check_once", side_effect=target):
+            result = await checker.check_monitor({"url": "https://intranet.example.test", "retry_count": 1})
+        self.assertEqual(order, ["reference", "target"])
+        self.assertTrue(result.ok)
+        self.assertEqual(result.evidence["internet_check"]["state"], "reference_unreachable")
+
+    async def test_successful_reference_and_unconfigured_are_distinct(self):
+        profile = {**self.profile(), "scope": "internet"}
+        engine = NetworkDiagnostics(transport=httpx.MockTransport(lambda request: httpx.Response(200)))
+        from sitesentry.core.checker import CheckResult
+        checker = SiteChecker(internet_profile_resolver=lambda: profile, network_diagnostics=engine)
+        with patch.object(checker, "_check_once", return_value=CheckResult(True, "up")):
+            result = await checker.check_monitor({"url": "https://example.test", "retry_count": 1})
+        self.assertEqual(result.evidence["internet_check"]["state"], "reachable")
+
+    async def test_local_network_down_is_distinct_from_reference_failure(self):
+        profile = {**self.profile(), "scope": "internet"}
+        async def handler(request):
+            try:
+                raise OSError(errno.ENETDOWN, "network unavailable")
+            except OSError as cause:
+                raise httpx.ConnectError("network error", request=request) from cause
+        engine = NetworkDiagnostics(transport=httpx.MockTransport(handler))
+        from sitesentry.core.checker import CheckResult
+        checker = SiteChecker(internet_profile_resolver=lambda: profile, network_diagnostics=engine)
+        with patch.object(checker, "_check_once", return_value=CheckResult(True, "up")):
+            result = await checker.check_monitor({"url": "https://intranet.example.test", "retry_count": 1})
+        self.assertEqual(result.evidence["internet_check"]["state"], "network_offline")
+        self.assertTrue(result.ok)

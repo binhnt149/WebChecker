@@ -115,10 +115,11 @@ def parse_login_forms(response_text: str) -> list[dict[str, Any]]:
 
 
 class SiteChecker:
-    def __init__(self, user_agent: str = "SiteSentry Desktop/1.0", profile_resolver: Callable[[str], dict[str, Any] | None] | None = None, network_diagnostics: NetworkDiagnostics | None = None) -> None:
+    def __init__(self, user_agent: str = "SiteSentry Desktop/1.0", profile_resolver: Callable[[str], dict[str, Any] | None] | None = None, network_diagnostics: NetworkDiagnostics | None = None, internet_profile_resolver: Callable[[], dict[str, Any] | None] | None = None) -> None:
         self.user_agent = user_agent
         self.profile_resolver = profile_resolver
         self.network_diagnostics = network_diagnostics or NetworkDiagnostics()
+        self.internet_profile_resolver = internet_profile_resolver
 
     async def check_monitor(self, monitor: dict[str, Any]) -> CheckResult:
         try:
@@ -126,6 +127,17 @@ class SiteChecker:
             retry_delay = max(0.0, float(monitor.get("retry_delay_seconds") or 0.0))
         except (ValueError, TypeError):
             return CheckResult(False, "down", error="Invalid retry configuration", error_type="configuration_error", classification_state="confirmed", reason_code="invalid_retry", phase="configuration", evidence_source="configuration", evidence={"field": "retry"})
+        internet_check = None
+        if self.internet_profile_resolver:
+            try:
+                profile = self.internet_profile_resolver()
+                if profile and profile.get("scope") == "internet" and profile.get("enabled") and profile.get("targets"):
+                    internet_check = await self.network_diagnostics.probe(profile)
+                    targets = internet_check["targets"]
+                    state = "reachable" if any(t["reachable"] for t in targets) else "network_offline" if any(t.get("error_type") == "network_offline" for t in targets) else "reference_unreachable"
+                    internet_check = {**internet_check, "state": state}
+            except (ValueError, httpx.HTTPError, OSError):
+                internet_check = {"state": "unconfigured", "targets": []}
         last_result: CheckResult | None = None
 
         for attempt in range(1, retry_count + 1):
@@ -146,12 +158,17 @@ class SiteChecker:
                 result.evidence = {key: value for key, value in {"status_code": result.status_code, "exception_kind": result.details.get("exception_kind")}.items() if value is not None}
             result.attempts = attempt
             if result.ok or result.error_type in {"auth_credentials", "configuration_error"}:
+                if internet_check is not None:
+                    result.evidence["internet_check"] = internet_check
                 return await self._finalize(monitor, result)
             last_result = result
             if attempt < retry_count and retry_delay:
                 await asyncio.sleep(retry_delay)
 
-        return await self._finalize(monitor, last_result or CheckResult(False, "down", error="No check attempts were executed", error_type="unknown", classification_state="undetermined"))
+        result = last_result or CheckResult(False, "down", error="No check attempts were executed", error_type="unknown", classification_state="undetermined")
+        if internet_check is not None:
+            result.evidence["internet_check"] = internet_check
+        return await self._finalize(monitor, result)
 
     async def _finalize(self, monitor: dict[str, Any], result: CheckResult) -> CheckResult:
         profile_name = str(monitor.get("network_profile") or "")

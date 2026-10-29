@@ -8,10 +8,15 @@ import customtkinter as ctk
 
 from sitesentry.core.email_rules import RULE_TYPES, parse_recipients
 from .background import run_background
-from .email_rule_dialog import EmailRuleDialog
+from .email_rule_dialog import EmailRuleDialog, PERIODS, DAYS
+from .diagnostics_dialog import NetworkProfilesDialog
+from .vi import message as vi_message
 from .focus import bind_focus_on_click
 from .theme import polish, table_scrollers
+from .vi import DELIVERY, label
 from sitesentry.core.diagnostics import decoded_exclusions
+
+THEMES = {"System": "Theo hệ thống", "Dark": "Tối", "Light": "Sáng"}
 
 
 class SettingsView(ctk.CTkFrame):
@@ -24,16 +29,25 @@ class SettingsView(ctk.CTkFrame):
         header = ctk.CTkFrame(self, fg_color="transparent")
         header.grid(row=0, column=0, padx=20, pady=(18, 8), sticky="ew")
         header.grid_columnconfigure(0, weight=1)
-        ctk.CTkLabel(header, text="Settings", font=ctk.CTkFont(size=24, weight="bold")).grid(row=0, column=0, sticky="w")
-        ctk.CTkButton(header, text="Save", command=self._save, width=90).grid(row=0, column=1, padx=6)
-        self.test_button = ctk.CTkButton(header, text="Test Email", command=self._test_email, width=110)
+        ctk.CTkLabel(header, text="Cài đặt", font=ctk.CTkFont(size=24, weight="bold")).grid(row=0, column=0, sticky="w")
+        ctk.CTkButton(header, text='Lưu', command=self._save, width=90).grid(row=0, column=1, padx=6)
+        self.test_button = ctk.CTkButton(header, text='Thử email', command=self._test_email, width=110)
         self.test_button.grid(row=0, column=2, padx=(6, 0))
-        ctk.CTkButton(header, text="Delivery queue", command=self._show_queue, width=120).grid(row=0, column=3, padx=(6, 0))
+        ctk.CTkButton(header, text='Hàng đợi email', command=self._show_queue, width=120).grid(row=0, column=3, padx=(6, 0))
         tabs = ctk.CTkTabview(self, corner_radius=8)
         self.tabs = tabs
         tabs.grid(row=1, column=0, padx=20, pady=8, sticky="nsew")
         smtp = tabs.add("SMTP")
-        schedules = tabs.add("Email schedules")
+        schedules = tabs.add('Lịch email')
+        internet = tabs.add("Internet")
+        internet.grid_columnconfigure(0, weight=1)
+        ctk.CTkLabel(internet, text="Kiểm tra Internet trước mỗi lượt giám sát", font=ctk.CTkFont(size=16, weight="bold")).grid(row=0, column=0, padx=12, pady=(16, 8), sticky="w")
+        ctk.CTkLabel(internet, text="Chọn profile Internet có điểm tham chiếu do bạn quản lý. Khi điểm tham chiếu không phản hồi, ứng dụng vẫn kiểm tra các monitor và ghi sự kiện riêng; điều này chưa khẳng định toàn bộ Internet bị mất.", wraplength=700, justify="left").grid(row=1, column=0, padx=12, pady=8, sticky="w")
+        self.internet_profile_var = tk.StringVar(value="Chưa cấu hình")
+        self.internet_profile_menu = ctk.CTkOptionMenu(internet, variable=self.internet_profile_var, values=["Chưa cấu hình"], width=260)
+        self.internet_profile_menu.grid(row=2, column=0, padx=12, pady=8, sticky="w")
+        ctk.CTkButton(internet, text="Quản lý profile mạng", command=self._manage_internet_profiles).grid(row=3, column=0, padx=12, pady=8, sticky="w")
+        self._refresh_internet_profiles()
         smtp.grid_columnconfigure(0, weight=1)
         smtp.grid_rowconfigure(0, weight=1)
         form = ctk.CTkScrollableFrame(smtp, fg_color="transparent")
@@ -46,22 +60,22 @@ class SettingsView(ctk.CTkFrame):
         self.username_var = tk.StringVar()
         self.password_var = tk.StringVar()
         self.from_var = tk.StringVar()
-        self.theme_var = tk.StringVar(value="System")
-        ctk.CTkCheckBox(form, text="Enable SMTP alerts", variable=self.smtp_enabled).grid(row=0, column=0, columnspan=2, padx=10, pady=10, sticky="w")
-        ctk.CTkCheckBox(form, text="Use STARTTLS", variable=self.tls_enabled).grid(row=0, column=2, columnspan=2, padx=10, pady=10, sticky="w")
-        self._entry(form, "SMTP host", self.host_var, 1, 0, 3)
-        self._entry(form, "Port", self.port_var, 1, 3)
-        self._entry(form, "Username", self.username_var, 2, 0, 2)
-        self._entry(form, "Password", self.password_var, 2, 2, 2, show="*")
-        self._entry(form, "From email", self.from_var, 3, 0, 4)
-        ctk.CTkLabel(form, text="Recipients").grid(row=8, column=0, padx=10, pady=(10, 0), sticky="w")
+        self.theme_var = tk.StringVar(value=THEMES["System"])
+        ctk.CTkCheckBox(form, text='Bật cảnh báo SMTP', variable=self.smtp_enabled).grid(row=0, column=0, columnspan=2, padx=10, pady=10, sticky="w")
+        ctk.CTkCheckBox(form, text='Dùng STARTTLS', variable=self.tls_enabled).grid(row=0, column=2, columnspan=2, padx=10, pady=10, sticky="w")
+        self._entry(form, 'Máy chủ SMTP', self.host_var, 1, 0, 3)
+        self._entry(form, 'Cổng', self.port_var, 1, 3)
+        self._entry(form, 'Tên đăng nhập', self.username_var, 2, 0, 2)
+        self._entry(form, 'Mật khẩu', self.password_var, 2, 2, 2, show="*")
+        self._entry(form, 'Email gửi', self.from_var, 3, 0, 4)
+        ctk.CTkLabel(form, text='Người nhận').grid(row=8, column=0, padx=10, pady=(10, 0), sticky="w")
         self.to_box = bind_focus_on_click(ctk.CTkTextbox(form, height=80))
         self.to_box.grid(row=9, column=0, columnspan=4, padx=10, pady=(0, 10), sticky="ew")
-        ctk.CTkLabel(form, text="Appearance").grid(row=10, column=0, padx=10, pady=(10, 0), sticky="w")
-        ctk.CTkOptionMenu(form, values=["System", "Dark", "Light"], variable=self.theme_var).grid(row=11, column=0, columnspan=2, padx=10, pady=(0, 10), sticky="ew")
+        ctk.CTkLabel(form, text='Giao diện').grid(row=10, column=0, padx=10, pady=(10, 0), sticky="w")
+        ctk.CTkOptionMenu(form, values=list(THEMES.values()), variable=self.theme_var).grid(row=11, column=0, columnspan=2, padx=10, pady=(0, 10), sticky="ew")
         schedules.grid_columnconfigure(0, weight=1)
         schedules.grid_rowconfigure(1, weight=1)
-        ctk.CTkButton(schedules, text="Add schedule", command=lambda: self._edit_rule(None), width=130).grid(row=0, column=0, padx=8, pady=8, sticky="e")
+        ctk.CTkButton(schedules, text='Thêm lịch', command=lambda: self._edit_rule(None), width=130).grid(row=0, column=0, padx=8, pady=8, sticky="e")
         self.rules_list = ctk.CTkScrollableFrame(schedules, fg_color="transparent")
         self.rules_list.grid(row=1, column=0, sticky="nsew")
         self.rules_list.grid_columnconfigure(0, weight=1)
@@ -78,49 +92,64 @@ class SettingsView(ctk.CTkFrame):
         data = self.app.db.get_settings()
         self.smtp_enabled.set(data.get("smtp_enabled", "0") == "1")
         self.tls_enabled.set(data.get("smtp_use_tls", "1") == "1")
-        for variable, key, default in [(self.host_var, "smtp_host", ""), (self.port_var, "smtp_port", "587"), (self.username_var, "smtp_username", ""), (self.password_var, "smtp_password", ""), (self.from_var, "smtp_from", ""), (self.theme_var, "appearance", "System")]:
+        for variable, key, default in [(self.host_var, "smtp_host", ""), (self.port_var, "smtp_port", "587"), (self.username_var, "smtp_username", ""), (self.password_var, "smtp_password", ""), (self.from_var, "smtp_from", "")]:
             variable.set(data.get(key, default))
+        self.theme_var.set(THEMES.get(data.get("appearance", "System"), THEMES["System"]))
         self.to_box.insert("1.0", data.get("smtp_to", ""))
+        self.internet_profile_var.set(data.get("internet_profile") or "Chưa cấu hình")
+        self._refresh_internet_profiles()
+
+    def _refresh_internet_profiles(self) -> None:
+        profiles = [p["name"] for p in self.app.db.list_network_profiles() if p["scope"] == "internet" and p["enabled"] and p["targets"]]
+        values = ["Chưa cấu hình", *profiles]
+        self.internet_profile_menu.configure(values=values)
+        if self.internet_profile_var.get() not in values:
+            self.internet_profile_var.set("Chưa cấu hình")
+
+    def _manage_internet_profiles(self) -> None:
+        self._network_profiles_dialog = NetworkProfilesDialog(self, self.app, self._refresh_internet_profiles)
 
     def _save(self) -> bool:
         try:
             port = int(self.port_var.get())
             if not 1 <= port <= 65535:
-                raise ValueError("SMTP port must be between 1 and 65535")
+                raise ValueError('Cổng SMTP phải từ 1 đến 65535')
             recipients = self.to_box.get("1.0", "end-1c").strip()
             parse_recipients(recipients)
             sender = self.from_var.get().strip()
             if sender and (len(parse_recipients(sender)) != 1 or any(char in sender for char in "\r\n")):
-                raise ValueError("Enter one valid From email")
+                raise ValueError('Nhập một địa chỉ email gửi hợp lệ')
             if self.smtp_enabled.get() and not self.host_var.get().strip():
-                raise ValueError("SMTP host is required")
+                raise ValueError('Cần nhập máy chủ SMTP')
         except ValueError as exc:
-            messagebox.showerror("Settings", str(exc), parent=self)
+            messagebox.showerror("Cài đặt", vi_message(exc), parent=self)
             return False
-        data = {"smtp_enabled": "1" if self.smtp_enabled.get() else "0", "smtp_use_tls": "1" if self.tls_enabled.get() else "0", "smtp_host": self.host_var.get().strip(), "smtp_port": str(port), "smtp_username": self.username_var.get().strip(), "smtp_from": sender, "smtp_to": recipients, "appearance": self.theme_var.get()}
+        theme = next((key for key, value in THEMES.items() if value == self.theme_var.get()), "System")
+        data = {"smtp_enabled": "1" if self.smtp_enabled.get() else "0", "smtp_use_tls": "1" if self.tls_enabled.get() else "0", "smtp_host": self.host_var.get().strip(), "smtp_port": str(port), "smtp_username": self.username_var.get().strip(), "smtp_from": sender, "smtp_to": recipients, "appearance": theme}
         for key, value in data.items():
             self.app.db.set_setting(key, value)
+        self.app.db.set_setting("internet_profile", "" if self.internet_profile_var.get() == "Chưa cấu hình" else self.internet_profile_var.get())
         self.app.db.set_setting("smtp_password", self.password_var.get(), secret=True)
-        ctk.set_appearance_mode(self.theme_var.get())
+        ctk.set_appearance_mode(theme)
         polish(self.app)
         self.app.notifier.wake()
-        self.status_label.configure(text="Settings saved")
+        self.status_label.configure(text='Đã lưu cài đặt')
         return True
 
     def _test_email(self) -> None:
         if not self._save():
             return
         self.test_button.configure(state="disabled")
-        self.status_label.configure(text="Sending test email...")
+        self.status_label.configure(text='Đang gửi email thử...')
 
         def done(result: tuple[bool, str]) -> None:
             ok, message = result
             self.test_button.configure(state="normal")
-            self.status_label.configure(text=message, text_color="#16a34a" if ok else "#dc2626")
+            self.status_label.configure(text=vi_message(message), text_color="#16a34a" if ok else "#dc2626")
 
         def failed(message: str) -> None:
             self.test_button.configure(state="normal")
-            self.status_label.configure(text=message, text_color="#dc2626")
+            self.status_label.configure(text=vi_message(message), text_color="#dc2626")
 
         run_background(self.app, self, self.app.notifier.send_test_email, done, failed)
 
@@ -130,7 +159,7 @@ class SettingsView(ctk.CTkFrame):
         rules = self.app.db.list_email_rules()
         counts = self.app.db.email_delivery_counts()
         if not rules:
-            ctk.CTkLabel(self.rules_list, text="No email schedules").grid(row=0, column=0, pady=40)
+            ctk.CTkLabel(self.rules_list, text='Chưa có lịch email').grid(row=0, column=0, pady=40)
         for index, rule in enumerate(rules):
             row = ctk.CTkFrame(self.rules_list, fg_color="transparent")
             row.grid(row=index, column=0, padx=8, pady=10, sticky="ew")
@@ -138,19 +167,20 @@ class SettingsView(ctk.CTkFrame):
             ctk.CTkLabel(row, text=rule["name"], font=ctk.CTkFont(weight="bold"), anchor="w", wraplength=330).grid(row=0, column=0, sticky="ew")
             description = RULE_TYPES[rule["rule_type"]]
             if rule["rule_type"] == "daily_summary":
-                description += f" | {rule['hour']:02d}:{rule['minute']:02d} | {rule['weekdays']} | {rule['report_period']}"
-            description += " | Enabled" if rule["enabled"] else " | Disabled"
+                days = ", ".join(DAYS.get(day, day) for day in rule["weekdays"].split(","))
+                description += f" | {rule['hour']:02d}:{rule['minute']:02d} | {days} | {PERIODS.get(rule['report_period'], rule['report_period'])}"
+            description += " | Đang bật" if rule["enabled"] else " | Đã tắt"
             if rule["rule_type"] == "incident":
-                description += f" | Group {rule['batch_window_seconds']}s"
+                description += f" | Gom {rule['batch_window_seconds']} giây"
             if decoded_exclusions(rule):
-                description += f" | {len(decoded_exclusions(rule))} excluded categories"
+                description += f" | Loại {len(decoded_exclusions(rule))} nhóm lỗi"
             ctk.CTkLabel(row, text=description, anchor="w", wraplength=500, justify="left").grid(row=1, column=0, columnspan=4, sticky="ew")
-            ctk.CTkLabel(row, text=rule["recipients"] or "SMTP recipients", anchor="w", wraplength=500, justify="left").grid(row=2, column=0, columnspan=4, sticky="ew")
+            ctk.CTkLabel(row, text=rule["recipients"] or 'Người nhận SMTP', anchor="w", wraplength=500, justify="left").grid(row=2, column=0, columnspan=4, sticky="ew")
             if rule["rule_type"] == "daily_summary":
-                ctk.CTkButton(row, text="Send now", width=86, command=lambda value=rule["id"]: self._send_summary(value)).grid(row=0, column=1, padx=4)
-            ctk.CTkButton(row, text="Edit", width=60, command=lambda value=rule: self._edit_rule(value)).grid(row=0, column=2, padx=4)
-            ctk.CTkButton(row, text="Delete", width=64, fg_color="#991b1b", command=lambda value=rule["id"]: self._delete_rule(value)).grid(row=0, column=3, padx=4)
-        self.status_label.configure(text="Email queue: " + ", ".join(f"{key}: {value}" for key, value in counts.items()) if counts else "No email deliveries yet")
+                ctk.CTkButton(row, text='Gửi ngay', width=86, command=lambda value=rule["id"]: self._send_summary(value)).grid(row=0, column=1, padx=4)
+            ctk.CTkButton(row, text='Sửa', width=60, command=lambda value=rule: self._edit_rule(value)).grid(row=0, column=2, padx=4)
+            ctk.CTkButton(row, text='Xóa', width=64, fg_color="#991b1b", command=lambda value=rule["id"]: self._delete_rule(value)).grid(row=0, column=3, padx=4)
+        self.status_label.configure(text="Hàng đợi email: " + ", ".join(f"{label(DELIVERY, key)}: {value}" for key, value in counts.items()) if counts else 'Chưa có thư trong hàng đợi')
         polish(self.rules_list)
 
     def _edit_rule(self, rule: dict[str, Any] | None) -> None:
@@ -169,7 +199,7 @@ class SettingsView(ctk.CTkFrame):
         self._dialog = EmailRuleDialog(self, rule, save)
 
     def _delete_rule(self, rule_id: int) -> None:
-        if messagebox.askyesno("Delete schedule", "Delete this schedule and its email queue?", parent=self):
+        if messagebox.askyesno('Xóa lịch', 'Xóa lịch này và hàng đợi email của lịch?', parent=self):
             self.app.db.delete_email_rule(rule_id)
             self.app.scheduler.sync_email_jobs()
             self._refresh_rules()
@@ -177,7 +207,7 @@ class SettingsView(ctk.CTkFrame):
     def _send_summary(self, rule_id: int) -> None:
         if not self._save():
             return
-        run_background(self.app, self, lambda: self.app.scheduler.queue_daily_summary(rule_id, manual=True), lambda queued: self.status_label.configure(text="Summary queued" if queued else "Summary not queued: check SMTP and schedule status"))
+        run_background(self.app, self, lambda: self.app.scheduler.queue_daily_summary(rule_id, manual=True), lambda queued: self.status_label.configure(text='Đã đưa thư tổng hợp vào hàng đợi' if queued else 'Chưa tạo thư tổng hợp: kiểm tra SMTP và lịch gửi'))
 
     def _show_queue(self) -> None:
         self._queue_dialog = DeliveryQueueDialog(self, self.app, self._refresh_rules)
@@ -187,46 +217,46 @@ class DeliveryQueueDialog(ctk.CTkToplevel):
     def __init__(self, master: Any, app: Any, on_change: Any) -> None:
         super().__init__(master)
         self.app, self.on_change = app, on_change
-        self.title("Delivery queue")
+        self.title('Hàng đợi email')
         self.geometry("800x450")
         self.transient(master)
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(1, weight=1)
-        ctk.CTkLabel(self, text="Held: unclassified. Uncertain: SMTP may already have accepted the message.", wraplength=720).grid(row=0, column=0, padx=16, pady=12, sticky="w")
+        ctk.CTkLabel(self, text='Đang giữ: chưa phân loại. Chưa chắc chắn: SMTP có thể đã nhận thư.', wraplength=720).grid(row=0, column=0, padx=16, pady=12, sticky="w")
         frame = ctk.CTkFrame(self, fg_color="transparent")
         frame.grid(row=1, column=0, padx=16, sticky="nsew")
         self.table = ttk.Treeview(frame, columns=("status", "monitor", "schedule", "kind", "category"), show="headings", selectmode="browse")
-        for column, title, width in [("status", "Status", 150), ("monitor", "Monitor", 170), ("schedule", "Schedule", 140), ("kind", "Event", 90), ("category", "Category", 140)]:
+        for column, title, width in [("status", 'Trạng thái', 150), ("monitor", 'Monitor', 170), ("schedule", "Schedule", 140), ("kind", 'Sự kiện', 90), ("category", 'Nhóm lỗi', 140)]:
             self.table.heading(column, text=title)
             self.table.column(column, width=width)
         table_scrollers(frame, self.table)
         actions = ctk.CTkFrame(self, fg_color="transparent")
         actions.grid(row=2, column=0, padx=16, pady=12, sticky="ew")
-        ctk.CTkButton(actions, text="Refresh", width=90, command=self._refresh).pack(side="left", padx=4)
-        ctk.CTkButton(actions, text="Retry uncertain", width=130, command=self._retry).pack(side="left", padx=4)
-        ctk.CTkButton(actions, text="Close", width=90, command=self.destroy).pack(side="right")
+        ctk.CTkButton(actions, text='Làm mới', width=90, command=self._refresh).pack(side="left", padx=4)
+        ctk.CTkButton(actions, text='Gửi lại thư chưa chắc', width=130, command=self._retry).pack(side="left", padx=4)
+        ctk.CTkButton(actions, text='Đóng', width=90, command=self.destroy).pack(side="right")
         self._refresh()
         polish(self)
 
     def _refresh(self) -> None:
         self.table.delete(*self.table.get_children())
         for item in self.app.db.list_problem_deliveries():
-            self.table.insert("", "end", iid=str(item["id"]), values=(item["status"], item["monitor_name"], item["rule_name"], item["kind"], item["error_type"]))
+            self.table.insert("", "end", iid=str(item["id"]), values=(label(DELIVERY, item["status"]), item["monitor_name"], item["rule_name"], item["kind"], item["error_type"]))
         self.on_change()
 
     def _retry(self) -> None:
         selected = self.table.selection()
         if not selected:
             return
-        if self.table.item(selected[0], "values")[0] != "delivery_uncertain":
-            messagebox.showinfo("Delivery queue", "Held incidents must be classified by a new monitor check.", parent=self)
+        if self.table.item(selected[0], "values")[0] != DELIVERY["delivery_uncertain"]:
+            messagebox.showinfo('Hàng đợi email', 'Sự cố đang giữ cần được phân loại trong lượt kiểm tra mới.', parent=self)
             return
-        if not messagebox.askyesno("Retry delivery", "SMTP may already have accepted this message. Retrying can send a duplicate. Continue?", parent=self):
+        if not messagebox.askyesno('Gửi lại', 'SMTP có thể đã nhận thư. Gửi lại có thể tạo thư trùng. Tiếp tục?', parent=self):
             return
         try:
             self.app.db.retry_uncertain_delivery(int(selected[0]))
         except ValueError as exc:
-            messagebox.showerror("Delivery queue", str(exc), parent=self)
+            messagebox.showerror('Hàng đợi email', vi_message(exc), parent=self)
             return
         self.app.notifier.wake()
         self._refresh()
